@@ -14,7 +14,7 @@ import websocket
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
-APP_NAME = "comfyui-saas-apiLASTDANCE2"
+APP_NAME = "comfyui-saas-api"
 app = modal.App(APP_NAME)
 
 # CRITICAL: Single cache volume mounted at EMPTY path
@@ -74,23 +74,24 @@ class JobStatusResponse(BaseModel):
 def download_assets_and_setup():
     """Download model files during image build"""
     from huggingface_hub import hf_hub_download
-    
+    import subprocess
+
     print("🚀 Setting up ComfyUI models...")
-    
+
     # Create directory structure
-    for subdir in ["models/clip_vision", "models/diffusion_models", 
+    for subdir in ["models/clip_vision", "models/diffusion_models",
                    "models/text_encoders", "models/vae", "models/checkpoints",
                    "models/loras", "models/controlnet", "models/upscale_models",
-                   "outputs", "temp"]:
+                   "models/vae_approx", "outputs", "temp"]:
         Path(f"{CACHE_DIR}/{subdir}").mkdir(parents=True, exist_ok=True)
     
     # Download models using HF Transfer
     model_files = [
-        # Your existing model list...
-        ("Comfy-Org/Wan_2.1_ComfyUI_repackaged", 
-         "split_files/clip_vision/clip_vision_h.safetensors", 
+        # Existing Wan 2.1 models
+        ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+         "split_files/clip_vision/clip_vision_h.safetensors",
          f"{CACHE_DIR}/models/clip_vision"),
-        ("Comfy-Org/Wan_2.1_ComfyUI_repackaged", 
+        ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
          "split_files/diffusion_models/wan2.1_i2v_720p_14B_fp8_scaled.safetensors",
          f"{CACHE_DIR}/models/diffusion_models"),
         ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
@@ -105,6 +106,45 @@ def download_assets_and_setup():
         ("cagliostrolab/animagine-xl-4.0",
          "animagine-xl-4.0.safetensors",
          f"{CACHE_DIR}/models/checkpoints"),
+
+        # New Wan 2.2 Lightning models
+        ("Kijai/WanVideo_comfy",
+         "Wan22-Lightning/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_HIGH_fp16.safetensors",
+         f"{CACHE_DIR}/models/loras"),
+        ("Kijai/WanVideo_comfy",
+         "Wan22-Lightning/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors",
+         f"{CACHE_DIR}/models/loras"),
+        ("Kijai/WanVideo_comfy_fp8_scaled",
+         "I2V/Wan2_2-I2V-A14B-HIGH_fp8_e5m2_scaled_KJ.safetensors",
+         f"{CACHE_DIR}/models/diffusion_models"),
+        ("Kijai/WanVideo_comfy_fp8_scaled",
+         "I2V/Wan2_2-I2V-A14B-LOW_fp8_e5m2_scaled_KJ.safetensors",
+         f"{CACHE_DIR}/models/diffusion_models"),
+        ("Kijai/WanVideo_comfy",
+         "Wan22-Lightning/Wan2.2-Lightning_I2V-A14B-4steps-lora_HIGH_fp16.safetensors",
+         f"{CACHE_DIR}/models/loras"),
+        ("Kijai/WanVideo_comfy",
+         "Wan22-Lightning/Wan2.2-Lightning_I2V-A14B-4steps-lora_LOW_fp16.safetensors",
+         f"{CACHE_DIR}/models/loras"),
+        ("Kijai/WanVideo_comfy",
+         "Wan2_1_VAE_fp32.safetensors",
+         f"{CACHE_DIR}/models/vae"),
+        ("Kijai/WanVideo_comfy",
+         "umt5-xxl-enc-bf16.safetensors",
+         f"{CACHE_DIR}/models/text_encoders"),
+
+        # Additional clip vision
+        ("Kijai/WanVideo_comfy",
+         "open-clip-xlm-roberta-large-vit-huge-14_visual_fp32.safetensors",
+         f"{CACHE_DIR}/models/clip_vision"),
+
+        # VAE Approx and Upscaler
+        ("Kijai/WanVideo_comfy",
+         "taew2_1.safetensors",
+         f"{CACHE_DIR}/models/vae_approx"),
+        ("ABDALLALSWAITI/Upscalers",
+         "anime/2x-AnimeSharpV2_MoSR_Soft.pth",
+         f"{CACHE_DIR}/models/upscale_models"),
     ]
     
     for repo_id, filename, local_dir in model_files:
@@ -126,7 +166,51 @@ def download_assets_and_setup():
         except Exception as e:
             print(f"⚠️ Failed to download {filename}: {e}")
             continue
-    
+
+    # Download Mega LoRAs
+    print("📥 Downloading LoRAs from Mega...")
+    mega_loras = [
+        "https://mega.nz/file/xJ4w3DiT#E5h8kIwr-PQuxG4EeHXRw4uL1VFEbLxjYCMofsdfxNI",
+        "https://mega.nz/file/8NhkGTAA#Ww8jci3_uL9c7YzKJNw2MqX5vBUDc3ANJzUiaOGvHkk",
+    ]
+
+    for mega_url in mega_loras:
+        try:
+            print(f"📥 Downloading from Mega: {mega_url}")
+
+            # Get list of files before download to track what's new
+            import os
+            before_files = set(os.listdir(f"{CACHE_DIR}/models/loras/")) if os.path.exists(f"{CACHE_DIR}/models/loras/") else set()
+
+            # Use megadl to download the file (it will use original name)
+            result = subprocess.run(
+                ["megadl", mega_url, "--path", f"{CACHE_DIR}/models/loras/", "--no-progress"],
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
+
+            if result.returncode == 0:
+                # Find what file was downloaded
+                after_files = set(os.listdir(f"{CACHE_DIR}/models/loras/"))
+                new_files = after_files - before_files
+
+                if new_files:
+                    downloaded_file = new_files.pop()
+                    print(f"✅ Downloaded: {downloaded_file}")
+
+                    # Check if file already existed with same size
+                    file_path = Path(f"{CACHE_DIR}/models/loras/{downloaded_file}")
+                    if file_path.exists() and file_path.stat().st_size > 1000000:
+                        print(f"✅ File {downloaded_file} downloaded successfully ({file_path.stat().st_size / (1024*1024):.2f} MB)")
+                else:
+                    print(f"✅ File already exists (megadl skipped download)")
+            else:
+                print(f"⚠️ Failed to download from Mega: {result.stderr}")
+        except Exception as e:
+            print(f"⚠️ Failed to download from Mega: {e}")
+            continue
+
     cache_volume.commit()
     print("✅ Models committed to volume!")
 
@@ -137,12 +221,26 @@ def install_custom_nodes():
     nodes_dir = Path("/root/comfy/ComfyUI/custom_nodes")
     
     custom_nodes = [
+        # Existing nodes
         "https://github.com/pythongosssss/ComfyUI-Custom-Scripts",
         "https://github.com/Fannovel16/ComfyUI-Frame-Interpolation",
         "https://github.com/ltdrdata/ComfyUI-Manager",
         "https://github.com/WASasquatch/was-node-suite-comfyui",
         "https://github.com/cubiq/ComfyUI_essentials",
         "https://github.com/kijai/ComfyUI-KJNodes",
+
+        # New nodes
+        "https://github.com/kijai/ComfyUI-Florence2",
+        "https://github.com/kijai/ComfyUI-WanVideoWrapper",
+        "https://github.com/kijai/ComfyUI-GIMM-VFI",
+        "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite",
+        "https://github.com/Fannovel16/comfyui_controlnet_aux",
+        "https://github.com/Artificial-Sweetener/comfyui-WhiteRabbit",
+        "https://github.com/shiimizu/ComfyUI_smZNodes",
+        "https://github.com/CoreyCorza/ComfyUI-CRZnodes",
+        "https://github.com/yuvraj108c/ComfyUI-Dwpose-Tensorrt",
+        "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes",
+        "https://github.com/grmchn/ComfyUI-ProportionChanger",
     ]
     
     for node_url in custom_nodes:
@@ -172,7 +270,7 @@ def install_custom_nodes():
 # Build the image
 image = (
     modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu24.04", add_python="3.12")
-    .apt_install("git", "wget", "curl", "libgl1", "libglib2.0-0", "ffmpeg")
+    .apt_install("git", "wget", "curl", "libgl1", "libglib2.0-0", "ffmpeg", "megatools")
     # Install PyTorch with CUDA
     .pip_install(
         "torch", "torchvision", "torchaudio",
@@ -197,7 +295,7 @@ image = (
     })
     # Install ComfyUI
     .run_commands(
-        "cd /root && comfy --skip-prompt install --fast-deps --nvidia",
+        "cd /root && comfy --skip-prompt install --skip-manager --fast-deps --nvidia",
     )
     # Install custom nodes during build
     .run_function(install_custom_nodes)
@@ -821,14 +919,24 @@ def verify_setup():
     print("\n🎉 Setup verified! Deploy with: modal deploy your_script.py")
 
 # Cleanup
-@app.function(schedule=modal.Cron("0 2 * * *"))
+@app.function(
+    schedule=modal.Cron("0 2 * * *"),
+    image=modal.Image.debian_slim(python_version="3.12"),
+    volumes={
+        JOB_DIR: job_volume,
+        CACHE_DIR: cache_volume
+    }
+)
 def cleanup_old_jobs():
     """Remove old jobs and temp files"""
-    from datetime import timedelta
+    import json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
     
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     
     # Clean old jobs
+    JOB_DIR = "/jobs"  # Define locally to avoid import issues
     job_path = Path(JOB_DIR)
     if job_path.exists():
         for job_file in job_path.glob("*.json"):
@@ -844,6 +952,7 @@ def cleanup_old_jobs():
         job_volume.commit()
     
     # Clean temp files
+    CACHE_DIR = "/cache"  # Define locally to avoid import issues
     temp_path = Path(f"{CACHE_DIR}/temp")
     if temp_path.exists():
         for temp_file in temp_path.iterdir():
