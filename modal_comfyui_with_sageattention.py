@@ -103,6 +103,8 @@ class JobStatusResponse(BaseModel):
     current_node: Optional[str] = None
     last_event_time: Optional[datetime] = None
     error_log_tail: List[str] = Field(default_factory=list)
+    progress_value: int = 0
+    progress_max: int = 0
 
 def download_assets_and_setup():
     """Download model files during image build"""
@@ -660,10 +662,12 @@ class ComfyService:
             cached_nodes: set[str] = set()
             node_order: List[str] = []
             node_lookup: Dict[str, int] = {}
-            current_partial = [0.0, 1.0]
             last_commit_ts = time.time()
             last_commit_progress = job_data.get("progress", 0)
             last_history_poll = 0.0
+            last_progress_update = time.time()
+            current_partial_value: float = 0.0
+            current_partial_max: float = 1.0
 
             def _set_node_order(nodes: List[Any]) -> None:
                 cleaned: List[str] = []
@@ -680,13 +684,16 @@ class ComfyService:
                 node_lookup.clear()
                 node_lookup.update({nid: idx for idx, nid in enumerate(node_order)})
 
-            def _compute_progress() -> int:
-                total_planned = len(node_order) if node_order else len(workflow)
-                total_effective = max(1, total_planned - len(cached_nodes))
-                done = min(total_effective, len(executed_nodes))
-                fraction = done / total_effective
-                if current_partial[1] and current_partial[1] > 0 and done < total_effective:
-                    fraction += (current_partial[0] / current_partial[1]) / total_effective
+            def _effective_total_nodes() -> int:
+                planned = len(node_order) if node_order else len(workflow)
+                return max(1, planned - len(cached_nodes))
+
+            def _compute_overall_percent() -> int:
+                effective_total = _effective_total_nodes()
+                done = min(len(executed_nodes), effective_total)
+                fraction = done / effective_total
+                if current_partial_max > 0 and done < effective_total:
+                    fraction += (current_partial_value / current_partial_max) / effective_total
                 fraction = max(0.0, min(1.0, fraction))
                 return int(round(fraction * 100))
 
@@ -696,12 +703,24 @@ class ComfyService:
                 commit = force_commit or job_data.get("progress", 0) >= 100
                 if progress_changed and abs(job_data.get("progress", 0) - last_commit_progress) >= 5:
                     commit = True
-                if now_ts - last_commit_ts >= 30:
+                if now_ts - last_commit_ts >= 5:
                     commit = True
                 self._persist_job(job_file, job_data, commit=commit)
                 if commit:
                     last_commit_ts = now_ts
                     last_commit_progress = job_data.get("progress", 0)
+
+            def _mark_done_and_persist(reason: str) -> None:
+                nonlocal current_partial_value, current_partial_max
+                current_partial_value = current_partial_max
+                job_data["current_node"] = None
+                max_val = job_data.get("progress_max") or int(current_partial_max) or 100
+                job_data["progress_max"] = max_val
+                job_data["progress_value"] = max_val
+                job_data["progress"] = 100
+                if job_data.get("nodes_total") and job_data.get("nodes_done", 0) < job_data["nodes_total"]:
+                    job_data["nodes_done"] = job_data["nodes_total"]
+                _persist(progress_changed=True, force_commit=True)
 
             try:
                 ws = websocket.create_connection(ws_url, timeout=15)
@@ -732,33 +751,57 @@ class ComfyService:
                         raw_msg = ws.recv()
                     except websocket.WebSocketTimeoutException:
                         now_ts = time.time()
-                        if prompt_id and now_ts - last_history_poll >= 5:
+                        if prompt_id and now_ts - last_history_poll >= 3:
                             last_history_poll = now_ts
                             try:
                                 history_resp = self._request_with_retry(
                                     "get",
                                     f"http://127.0.0.1:8188/history/{prompt_id}",
-                                    timeout=5,
+                                    timeout=4,
                                     retries=2,
                                 )
                                 history = history_resp.json()
                                 history_resp.close()
                                 prompt_history = history.get(prompt_id, {})
+                                status_raw = prompt_history.get("status")
+                                outputs = prompt_history.get("outputs") or {}
                                 workflow_nodes = (
-                                    prompt_history.get("workflow", {}).get("nodes", [])
+                                    (prompt_history.get("workflow") or {}).get("nodes") or []
                                 )
                                 if workflow_nodes and not node_order:
                                     _set_node_order([n.get("id") for n in workflow_nodes if n.get("id")])
                                     job_data["nodes_total"] = len(node_order)
-                                outputs = prompt_history.get("outputs", {})
                                 if outputs:
                                     executed_nodes.update(str(node) for node in outputs.keys())
                                     job_data["nodes_done"] = len(executed_nodes)
-                                    prev = job_data.get("progress", 0)
-                                    job_data["progress"] = _compute_progress()
-                                    _persist(progress_changed=job_data["progress"] != prev)
+                                new_pct = _compute_overall_percent()
+                                if new_pct != job_data.get("progress", 0):
+                                    job_data["progress"] = new_pct
+                                    last_progress_update = now_ts
+                                    _persist(progress_changed=True)
+                                else:
+                                    _persist()
+
+                                if isinstance(status_raw, dict):
+                                    status_str = str(status_raw.get("status", "")).lower()
+                                else:
+                                    status_str = str(status_raw or "").lower()
+                                if status_str in {"success", "completed"}:
+                                    _mark_done_and_persist("history-status")
+                                    break
+                                if status_str in {"error", "failed"}:
+                                    raise RuntimeError(f"ComfyUI reported failure via history: {status_raw}")
+
+                                if (
+                                    outputs
+                                    and job_data.get("progress", 0) >= 95
+                                    and now_ts - last_progress_update >= 5
+                                ):
+                                    _mark_done_and_persist("history-outputs")
+                                    break
                             except Exception as poll_err:
                                 print(f"Progress poll failed: {poll_err}")
+                                _persist()
                         continue
 
                     if isinstance(raw_msg, bytes):
@@ -783,8 +826,10 @@ class ComfyService:
                         node = data.get("node")
                         if node is None:
                             print("✅ Execution complete!")
+                            _mark_done_and_persist("ws-executing-none")
                             break
                         job_data["current_node"] = str(node)
+                        last_progress_update = time.time()
                         _persist()
                         continue
 
@@ -795,8 +840,13 @@ class ComfyService:
                             executed_nodes.add(str(node))
                             job_data["nodes_done"] = len(executed_nodes)
                             prev = job_data.get("progress", 0)
-                            job_data["progress"] = _compute_progress()
-                            _persist(progress_changed=job_data["progress"] != prev)
+                            new_pct = _compute_overall_percent()
+                            if new_pct != prev:
+                                job_data["progress"] = new_pct
+                                last_progress_update = time.time()
+                                _persist(progress_changed=True)
+                            else:
+                                _persist()
                         continue
 
                     if msg_type == "executed" and data.get("prompt_id") == prompt_id:
@@ -806,16 +856,30 @@ class ComfyService:
                             job_data["nodes_done"] = len(executed_nodes)
                             job_data["current_node"] = None
                             prev = job_data.get("progress", 0)
-                            job_data["progress"] = _compute_progress()
-                            _persist(progress_changed=job_data["progress"] != prev)
+                            new_pct = _compute_overall_percent()
+                            if new_pct != prev:
+                                job_data["progress"] = new_pct
+                                last_progress_update = time.time()
+                                _persist(progress_changed=True)
+                            else:
+                                _persist()
                         continue
 
-                    if msg_type == "progress" and data.get("prompt_id") == prompt_id:
-                        current_partial[0] = float(data.get("value", 0) or 0)
-                        current_partial[1] = float(data.get("max", 1) or 1)
-                        prev = job_data.get("progress", 0)
-                        job_data["progress"] = _compute_progress()
-                        _persist(progress_changed=job_data["progress"] != prev)
+                    if msg_type in {"progress", "progress_state"} and data.get("prompt_id") == prompt_id:
+                        value = float(data.get("value", 0) or 0)
+                        max_value = float(data.get("max", 0) or 0)
+                        current_partial_value = max(0.0, value)
+                        current_partial_max = max(1.0, max_value)
+                        job_data["progress_value"] = int(current_partial_value)
+                        job_data["progress_max"] = int(current_partial_max)
+                        previous = job_data.get("progress", 0)
+                        new_pct = _compute_overall_percent()
+                        if new_pct != previous:
+                            job_data["progress"] = new_pct
+                            last_progress_update = time.time()
+                            _persist(progress_changed=True)
+                        else:
+                            _persist()
                         continue
 
                     if msg_type == "execution_error" and data.get("prompt_id") == prompt_id:
@@ -897,7 +961,12 @@ class ComfyService:
             job_data["outputs"] = outputs
             job_data["progress"] = 100
             job_data["current_node"] = None
-            job_data["nodes_done"] = len(executed_nodes) if executed_nodes else job_data.get("nodes_done", 0)
+            if executed_nodes:
+                job_data["nodes_done"] = len(executed_nodes)
+            if job_data.get("nodes_total") and job_data.get("nodes_done", 0) < job_data["nodes_total"]:
+                job_data["nodes_done"] = job_data["nodes_total"]
+            job_data["progress_max"] = job_data.get("progress_max") or 100
+            job_data["progress_value"] = job_data.get("progress_max") or 100
 
             self._persist_job(job_file, job_data, commit=True)
 
@@ -1021,7 +1090,9 @@ async def create_job(request: Request, job_request: JobRequest):
         "nodes_total": 0,
         "nodes_done": 0,
         "current_node": None,
-        "error_log_tail": []
+        "error_log_tail": [],
+        "progress_value": 0,
+        "progress_max": 0,
     }
     
     # Save job
@@ -1068,6 +1139,8 @@ async def get_job_status(request: Request, job_id: str):
         current_node=job_data.get("current_node"),
         last_event_time=datetime.fromisoformat(job_data["last_event_time"]) if job_data.get("last_event_time") else None,
         error_log_tail=job_data.get("error_log_tail", []),
+        progress_value=job_data.get("progress_value", 0),
+        progress_max=job_data.get("progress_max", 0),
     )
 
 @web_app.delete("/v1/jobs/{job_id}")

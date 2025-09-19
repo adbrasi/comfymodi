@@ -86,6 +86,8 @@ def run_workflow(image_path: str, prompt: str, *, poll_interval: float = 2.0, ti
     last_nodes_done = -1
     last_current_node: Optional[str] = None
     job_prompt_id: Optional[str] = None
+    last_progress_value = -1
+    last_progress_max = -1
     start_time = time.time()
     poll_count = 0
 
@@ -135,6 +137,8 @@ def run_workflow(image_path: str, prompt: str, *, poll_interval: float = 2.0, ti
         nodes_total = status.get('nodes_total') or 0
         nodes_done = status.get('nodes_done') or 0
         current_node = status.get('current_node')
+        progress_value = status.get('progress_value') or 0
+        progress_max = status.get('progress_max') or 0
 
         if status['status'] == 'completed':
             # Clear the progress line if we were showing it
@@ -148,6 +152,8 @@ def run_workflow(image_path: str, prompt: str, *, poll_interval: float = 2.0, ti
                 print(f"🆔 Prompt ID: {job_prompt_id}")
             if nodes_total:
                 print(f"🧮 Nodes completed: {nodes_done}/{nodes_total}")
+            if progress_max:
+                print(f"📈 Progress values: {progress_value}/{progress_max}")
 
             # Create outputs directory
             output_dir = Path("outputs")
@@ -207,6 +213,9 @@ def run_workflow(image_path: str, prompt: str, *, poll_interval: float = 2.0, ti
 
         # Show progress
         progress = status.get('progress', 0)
+        if progress_max:
+            computed = int((progress_value / progress_max) * 100)
+            progress = max(progress, computed)
         current_status = status['status']
 
         # Show status changes
@@ -230,6 +239,13 @@ def run_workflow(image_path: str, prompt: str, *, poll_interval: float = 2.0, ti
                 if current_node:
                     print(f"\n🔧 Current node: {current_node}")
                 last_current_node = current_node
+
+            if progress_max and (
+                progress_value != last_progress_value or progress_max != last_progress_max
+            ):
+                print(f"\n📈 Progress counter: {progress_value}/{progress_max}")
+                last_progress_value = progress_value
+                last_progress_max = progress_max
 
             # Always show progress updates if it changed
             if progress != last_progress:
