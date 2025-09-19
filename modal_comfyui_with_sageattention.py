@@ -3,6 +3,9 @@ import uuid
 import base64
 import time
 import subprocess
+import threading
+import shutil
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,8 +16,12 @@ from enum import Enum
 import modal
 import requests
 import websocket
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from pydantic import BaseModel, Field
 
 APP_NAME = "comfyui-saas-api"
 app = modal.App(APP_NAME)
@@ -70,8 +77,8 @@ class WorkflowInput(BaseModel):
 
 class JobRequest(BaseModel):
     workflow: Dict
-    inputs: Optional[List[WorkflowInput]] = []
-    media: Optional[List[MediaFile]] = []
+    inputs: List[WorkflowInput] = Field(default_factory=list)
+    media: List[MediaFile] = Field(default_factory=list)
     webhook_url: Optional[str] = None
     priority: int = 0
 
@@ -88,8 +95,14 @@ class JobStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     progress: int = 0
-    outputs: List[Dict] = []
+    outputs: List[Dict] = Field(default_factory=list)
     error: Optional[str] = None
+    prompt_id: Optional[str] = None
+    nodes_total: int = 0
+    nodes_done: int = 0
+    current_node: Optional[str] = None
+    last_event_time: Optional[datetime] = None
+    error_log_tail: List[str] = Field(default_factory=list)
 
 def download_assets_and_setup():
     """Download model files during image build"""
@@ -308,6 +321,7 @@ image = (
         "triton>=3.0.0",
         "https://huggingface.co/adbrasi/comfywheel/resolve/main/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl",
         "aiofiles",  # For async file operations
+        "slowapi",
     )
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
@@ -336,6 +350,20 @@ image = (
     )
 )
 
+api_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "fastapi[standard]",
+        "slowapi",
+        "pydantic",
+        "requests",
+        "websocket-client",
+    )
+    .env({
+        "PYTHONUNBUFFERED": "1",
+    })
+)
+
 @app.cls(
     gpu="L40S",
     image=image,
@@ -358,13 +386,10 @@ class ComfyService:
         
         print("📸 Creating memory snapshot (no GPU available yet)...")
         
-        # Pre-import heavy Python libraries that are already installed
-        # These imports will be cached in the snapshot
-        import torch  # Already installed
+        # Pre-import CPU-only libraries so the snapshot stays GPU-agnostic
         import numpy  # Installed as torch dependency
         import PIL  # From pillow package
         import cv2  # From opencv-python-headless
-        # Don't import transformers/safetensors/diffusers - not installed
         
         # Set environment variables
         os.environ["COMFYUI_PATH"] = "/root/comfy/ComfyUI"
@@ -382,359 +407,533 @@ class ComfyService:
         
         print("✅ Environment snapshot created (ComfyUI will start when GPU is available)")
         
-        # Initialize process variable
+        # Initialize runtime state containers (populated when GPU available)
         self.process = None
+        self._process_watch_thread: Optional[threading.Thread] = None
+        self._log_tail = deque(maxlen=200)
     
     @modal.enter(snap=False)  # Run AFTER snapshot restore, when GPU is available
     def start_comfy_with_gpu(self):
         """Start ComfyUI server with retry logic when GPU is available"""
         import subprocess
         import time
-        
+
         print("🎮 GPU now available, starting ComfyUI server...")
-        
-        # Only start if not already running
-        if self.process is None:
-            max_retries = 3
-            retry_delay = 5
-            
-            for attempt in range(max_retries):
-                try:
-                    print(f"📡 Starting ComfyUI server (attempt {attempt + 1}/{max_retries})...")
-                    
-                    # Start ComfyUI with GPU available
-                    self.process = subprocess.Popen([
-                        "python", "/root/comfy/ComfyUI/main.py",
-                        "--listen", "0.0.0.0",
-                        "--port", "8188",
+
+        if self.process and self.process.poll() is None:
+            print("♻️ ComfyUI server already running in this container.")
+            return
+
+        max_retries = 3
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"📡 Starting ComfyUI server (attempt {attempt}/{max_retries})...")
+
+                self._terminate_process()
+
+                self.process = subprocess.Popen(
+                    [
+                        "python",
+                        "/root/comfy/ComfyUI/main.py",
+                        "--listen",
+                        "0.0.0.0",
+                        "--port",
+                        "8188",
                         "--use-sage-attention",
                         "--disable-auto-launch",
-                        # Removed --preview-method none to allow previews
-                    ])
-                    
-                    # Wait for server to be ready
-                    server_ready = False
-                    start_time = time.time()
-                    
-                    while time.time() - start_time < 60:
-                        try:
-                            response = requests.get("http://localhost:8188/system_stats", timeout=2)
-                            if response.status_code == 200:
-                                print("✅ ComfyUI server ready with GPU!")
-                                server_ready = True
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+
+                def _watch_logs():
+                    try:
+                        for line in iter(self.process.stdout.readline, ""):
+                            if not line:
                                 break
-                        except:
-                            time.sleep(2)
-                    
-                    if server_ready:
-                        break  # Success, exit retry loop
+                            print(line, end="")
+                            self._log_tail.append(line.strip())
+                            if "Traceback" in line:
+                                print("⚠️ ComfyUI emitted a traceback; continuing to monitor.")
+                    finally:
+                        try:
+                            if self.process.stdout:
+                                self.process.stdout.close()
+                        except Exception:
+                            pass
+
+                self._process_watch_thread = threading.Thread(target=_watch_logs, daemon=True)
+                self._process_watch_thread.start()
+
+                backoff = 2.0
+                deadline = time.time() + 180
+                with requests.Session() as session:
+                    while time.time() < deadline:
+                        if self.process.poll() is not None:
+                            raise RuntimeError("ComfyUI process exited prematurely")
+                        try:
+                            resp = session.get("http://localhost:8188/system_stats", timeout=3)
+                            if resp.status_code == 200:
+                                print("✅ ComfyUI server ready with GPU!")
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(backoff)
+                        backoff = min(backoff * 1.5, 10.0)
                     else:
-                        # Kill the process if it didn't start properly
-                        if self.process:
-                            self.process.terminate()
-                            self.process.wait(timeout=5)
-                            self.process = None
-                        
-                        if attempt < max_retries - 1:
-                            print(f"⚠️ Server failed to start, retrying in {retry_delay} seconds...")
-                            time.sleep(retry_delay)
-                        else:
-                            raise Exception(f"ComfyUI server failed to start after {max_retries} attempts")
-                            
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        raise Exception(f"Failed to start ComfyUI after {max_retries} attempts: {e}")
-                    print(f"⚠️ Attempt {attempt + 1} failed: {e}, retrying...")
-                    time.sleep(retry_delay)
-        else:
-            print("♻️ ComfyUI server already running from previous container!")
-    
+                        raise TimeoutError("ComfyUI server did not become ready within 180 seconds")
+
+                import torch
+
+                if not torch.cuda.is_available():
+                    raise RuntimeError("CUDA not available after ComfyUI start")
+
+                print(f"✅ CUDA initialized. Devices: {torch.cuda.device_count()}")
+                return
+
+            except Exception as exc:
+                last_error = exc
+                print(f"⚠️ ComfyUI start attempt {attempt} failed: {exc}")
+                self._terminate_process()
+                if attempt < max_retries:
+                    time.sleep(min(5 * attempt, 15))
+
+        raise RuntimeError(f"Failed to start ComfyUI after {max_retries} attempts: {last_error}")
+
+    def _terminate_process(self):
+        """Terminate the managed ComfyUI process if it is running."""
+        if not self.process:
+            return
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
+                self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        finally:
+            self.process = None
+        if getattr(self, "_process_watch_thread", None):
+            self._process_watch_thread.join(timeout=2)
+            self._process_watch_thread = None
+
+    def _persist_job(self, job_file: Path, job_data: Dict[str, Any], *, commit: bool, touch_event_time: bool = True) -> None:
+        """Persist job metadata to the shared volume."""
+        if touch_event_time:
+            job_data["last_event_time"] = datetime.now(timezone.utc).isoformat()
+        job_file.parent.mkdir(parents=True, exist_ok=True)
+        with job_volume_guard(commit=commit):
+            with open(job_file, "w") as f:
+                json.dump(job_data, f)
+
+    def _request_with_retry(self, method: str, url: str, *, retries: int = 3, backoff: float = 1.5, **kwargs) -> requests.Response:
+        """Perform an HTTP request with simple exponential backoff."""
+        delay = 1.0
+        for attempt in range(retries):
+            try:
+                response = requests.request(method=method, url=url, **kwargs)
+                response.raise_for_status()
+                return response
+            except requests.RequestException as exc:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(delay)
+                delay *= backoff
+
     @modal.method()
     def process_job(self, job_id: str):
-        """Process a ComfyUI job with optimized progress tracking"""
-        progress_update_counter = 0
-        
+        """Process a ComfyUI job"""
+
+        job_file = Path(JOB_DIR) / f"{job_id}.json"
+        job_input_dir = INPUT_DIR / job_id
+
         try:
-            job_file = Path(JOB_DIR) / f"{job_id}.json"
-            with job_volume_guard(reload=True, commit=True):
+            with job_volume_guard(reload=True):
                 if not job_file.exists():
                     raise FileNotFoundError(f"Job {job_id} not found on volume")
-                with open(job_file, 'r') as f:
+                with open(job_file, "r") as f:
                     job_data = json.load(f)
 
-                # Update status to running
-                job_data["status"] = "running"
-                job_data["started_at"] = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            job_data["status"] = "running"
+            job_data["started_at"] = now_iso
+            job_data.setdefault("progress", 0)
+            job_data.setdefault("outputs", [])
+            job_data["prompt_id"] = None
+            job_data["nodes_total"] = 0
+            job_data["nodes_done"] = 0
+            job_data["current_node"] = None
+            job_data["last_event_time"] = now_iso
 
-                with open(job_file, 'w') as f:
-                    json.dump(job_data, f)
-            
-            # Process workflow
-            workflow = job_data["workflow"]
+            self._persist_job(job_file, job_data, commit=True, touch_event_time=False)
+
+            workflow = json.loads(json.dumps(job_data["workflow"]))
             inputs = job_data.get("inputs", [])
             media = job_data.get("media", [])
-            
-            # Handle media uploads
+
+            if job_input_dir.exists():
+                shutil.rmtree(job_input_dir, ignore_errors=True)
+            job_input_dir.mkdir(parents=True, exist_ok=True)
+
+            media_remap: Dict[str, str] = {}
+
+            def _store_media_bytes(filename: str, payload: bytes) -> str:
+                safe_name = Path(filename).name or f"asset_{uuid.uuid4().hex}"
+                dest = job_input_dir / safe_name
+                dest.write_bytes(payload)
+                rel_path = str(Path(job_id) / safe_name)
+                media_remap[safe_name] = rel_path
+                return rel_path
+
             for item in media:
-                if item.get("data"):
-                    file_data = base64.b64decode(item["data"])
-                    file_path = INPUT_DIR / item["name"]
-                    file_path.write_bytes(file_data)
-                elif item.get("url"):
-                    response = requests.get(item["url"], timeout=30)
-                    file_path = INPUT_DIR / item["name"]
-                    file_path.write_bytes(response.content)
-            
-            # Apply dynamic inputs
+                name = item.get("name") or f"media_{uuid.uuid4().hex}"
+                try:
+                    if item.get("data"):
+                        _store_media_bytes(name, base64.b64decode(item["data"]))
+                    elif item.get("url"):
+                        resp = self._request_with_retry("get", item["url"], timeout=30)
+                        content_type = resp.headers.get("Content-Type", "")
+                        if content_type.startswith("text/") and "json" not in content_type:
+                            resp.close()
+                            raise ValueError(f"Unexpected content type '{content_type}' for media '{name}'")
+                        _store_media_bytes(name, resp.content)
+                        resp.close()
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to prepare media '{name}': {exc}") from exc
+
+            def _apply_media_remap(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {k: _apply_media_remap(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_apply_media_remap(v) for v in obj]
+                if isinstance(obj, str) and obj in media_remap:
+                    return media_remap[obj]
+                return obj
+
+            if media_remap:
+                workflow = _apply_media_remap(workflow)
+
             for inp in inputs:
-                node_id = str(inp["node"])
-                if node_id in workflow:
-                    if "inputs" not in workflow[node_id]:
-                        workflow[node_id]["inputs"] = {}
-                    
-                    field = inp["field"]
-                    value = inp["value"]
-                    
-                    if inp.get("type") == "image_base64":
-                        img_data = base64.b64decode(value)
+                node_id = str(inp.get("node"))
+                if node_id not in workflow:
+                    continue
+                workflow.setdefault(node_id, {}).setdefault("inputs", {})
+                field = inp.get("field")
+                value = inp.get("value")
+                input_type = inp.get("type", "raw")
+
+                try:
+                    if input_type == "image_base64" and isinstance(value, str):
                         filename = f"input_{node_id}_{field}.png"
-                        (INPUT_DIR / filename).write_bytes(img_data)
-                        workflow[node_id]["inputs"][field] = filename
-                    elif inp.get("type") == "image_url":
-                        response = requests.get(value, timeout=30)
+                        rel_path = _store_media_bytes(filename, base64.b64decode(value))
+                        workflow[node_id]["inputs"][field] = rel_path
+                    elif input_type == "image_url" and isinstance(value, str):
+                        resp = self._request_with_retry("get", value, timeout=30)
+                        content_type = resp.headers.get("Content-Type", "")
+                        if not content_type.startswith("image/"):
+                            resp.close()
+                            raise ValueError(f"URL for node {node_id} returned unsupported content type '{content_type}'")
                         filename = f"input_{node_id}_{field}.png"
-                        (INPUT_DIR / filename).write_bytes(response.content)
-                        workflow[node_id]["inputs"][field] = filename
+                        rel_path = _store_media_bytes(filename, resp.content)
+                        resp.close()
+                        workflow[node_id]["inputs"][field] = rel_path
                     else:
                         workflow[node_id]["inputs"][field] = value
-            
-            # Execute via WebSocket with better error handling
-            client_id = str(uuid.uuid4())
-            ws = websocket.WebSocket()
-            ws.connect(f"ws://localhost:8188/ws?clientId={client_id}")
-            
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to prepare dynamic input for node {node_id}") from exc
+
             try:
-                # Submit prompt
-                response = requests.post(
-                    "http://localhost:8188/prompt",
-                    json={"prompt": workflow, "client_id": client_id},
-                    timeout=30
+                health_resp = requests.get("http://127.0.0.1:8188/system_stats", timeout=3)
+                health_resp.raise_for_status()
+            except Exception as exc:
+                raise RuntimeError("ComfyUI not healthy in this container") from exc
+
+            client_id = str(uuid.uuid4())
+            ws_url = f"ws://127.0.0.1:8188/ws?clientId={client_id}"
+            ws = None
+
+            prompt_id: Optional[str] = None
+            executed_nodes: set[str] = set()
+            cached_nodes: set[str] = set()
+            node_order: List[str] = []
+            node_lookup: Dict[str, int] = {}
+            current_partial = [0.0, 1.0]
+            last_commit_ts = time.time()
+            last_commit_progress = job_data.get("progress", 0)
+            last_history_poll = 0.0
+
+            def _set_node_order(nodes: List[Any]) -> None:
+                cleaned: List[str] = []
+                for node in nodes:
+                    if node is None:
+                        continue
+                    node_str = str(node)
+                    if node_str not in cleaned:
+                        cleaned.append(node_str)
+                if not cleaned:
+                    return
+                node_order.clear()
+                node_order.extend(cleaned)
+                node_lookup.clear()
+                node_lookup.update({nid: idx for idx, nid in enumerate(node_order)})
+
+            def _compute_progress() -> int:
+                total_planned = len(node_order) if node_order else len(workflow)
+                total_effective = max(1, total_planned - len(cached_nodes))
+                done = min(total_effective, len(executed_nodes))
+                fraction = done / total_effective
+                if current_partial[1] and current_partial[1] > 0 and done < total_effective:
+                    fraction += (current_partial[0] / current_partial[1]) / total_effective
+                fraction = max(0.0, min(1.0, fraction))
+                return int(round(fraction * 100))
+
+            def _persist(progress_changed: bool = False, force_commit: bool = False) -> None:
+                nonlocal last_commit_ts, last_commit_progress
+                now_ts = time.time()
+                commit = force_commit or job_data.get("progress", 0) >= 100
+                if progress_changed and abs(job_data.get("progress", 0) - last_commit_progress) >= 5:
+                    commit = True
+                if now_ts - last_commit_ts >= 30:
+                    commit = True
+                self._persist_job(job_file, job_data, commit=commit)
+                if commit:
+                    last_commit_ts = now_ts
+                    last_commit_progress = job_data.get("progress", 0)
+
+            try:
+                ws = websocket.create_connection(ws_url, timeout=15)
+                ws.settimeout(10)
+
+                submit_payload = {
+                    "prompt": workflow,
+                    "client_id": client_id,
+                    "extra_data": {"extra_pnginfo": {"workflow": workflow}},
+                }
+                response = self._request_with_retry(
+                    "post",
+                    "http://127.0.0.1:8188/prompt",
+                    json=submit_payload,
+                    timeout=60,
                 )
-                
-                if response.status_code != 200:
-                    raise Exception(f"Failed to submit workflow: {response.text}")
-                
                 prompt_id = response.json()["prompt_id"]
                 print(f"📋 Executing prompt {prompt_id}")
-                
-                # Improved progress tracking with all message types
-                progress_data = {
-                    "nodes_total": len(workflow),
-                    "nodes_completed": 0,
-                    "current_node": None,
-                    "ksampler_progress": 0,
-                    "previews": []
-                }
-                last_commit_time = time.time()
-                commit_interval = 10  # Commit every 10 seconds max
-                
+
+                job_data["prompt_id"] = prompt_id
+                _set_node_order(list(workflow.keys()))
+                job_data["nodes_total"] = len(node_order)
+                job_data["progress"] = 0
+                _persist(force_commit=True)
+
                 while True:
                     try:
                         raw_msg = ws.recv()
-                        
-                        # Handle binary preview frames properly
-                        if isinstance(raw_msg, bytes):
-                            # Store preview if enabled (optional)
-                            if job_data.get("enable_preview", False):
-                                preview_data = base64.b64encode(raw_msg).decode()
-                                progress_data["previews"].append(preview_data)
-                                # Keep only last 3 previews to avoid memory issues
-                                if len(progress_data["previews"]) > 3:
-                                    progress_data["previews"].pop(0)
-                            continue
-                        
-                        msg = json.loads(raw_msg)
-                        msg_type = msg.get("type")
-                        
-                        if msg_type == "execution_start":
-                            print(f"🚀 Starting execution for prompt {prompt_id}")
-                        
-                        elif msg_type == "execution_cached":
-                            # Nodes that used cached results
-                            cached_nodes = msg.get("data", {}).get("nodes", [])
-                            progress_data["nodes_completed"] += len(cached_nodes)
-                            print(f"⚡ {len(cached_nodes)} nodes using cache")
-                        
-                        elif msg_type == "executing":
-                            node = msg.get("data", {}).get("node")
-                            if node is None:
-                                print("✅ Execution complete!")
-                                break
-                            progress_data["current_node"] = node
-                            progress_data["nodes_completed"] += 1
-                            print(f"🔧 Executing node {node} ({progress_data['nodes_completed']}/{progress_data['nodes_total']})")
-                        
-                        elif msg_type == "progress":
-                            # KSampler or other node progress
-                            data = msg.get("data", {})
-                            current = data.get("value", 0)
-                            total = max(data.get("max", 1), 1)
-                            progress_data["ksampler_progress"] = current / total
-                            
-                            # Calculate overall progress
-                            node_progress = progress_data["nodes_completed"] / progress_data["nodes_total"]
-                            ksampler_weight = 0.5  # KSampler typically takes 50% of time
-                            
-                            if progress_data["ksampler_progress"] > 0:
-                                overall = (node_progress * (1 - ksampler_weight)) + (progress_data["ksampler_progress"] * ksampler_weight)
-                            else:
-                                overall = node_progress
-                            
-                            job_data["progress"] = int(overall * 100)
-                            job_data["progress_details"] = {
-                                "current_node": progress_data["current_node"],
-                                "nodes_completed": progress_data["nodes_completed"],
-                                "nodes_total": progress_data["nodes_total"],
-                                "step": f"{current}/{total}"
-                            }
-                            print(f"📊 Progress: {job_data['progress']}% (Step {current}/{total})")
-                        
-                        elif msg_type == "executed":
-                            # Node completed with output
-                            node_id = msg.get("data", {}).get("node")
-                            output = msg.get("data", {}).get("output", {})
-                            print(f"✓ Node {node_id} completed")
-                        
-                        elif msg_type == "execution_error":
-                            error_data = msg.get("data", {})
-                            raise Exception(f"Execution error: {error_data}")
-                        
-                        elif msg_type == "status":
-                            # Status updates, can be logged if needed
-                            pass
-                        
-                        # Batch commit - only commit if enough time has passed
-                        if time.time() - last_commit_time > commit_interval:
-                            with job_volume_guard(commit=True):
-                                with open(job_file, 'w') as f:
-                                    json.dump(job_data, f)
-                            last_commit_time = time.time()
-                            
-                    except json.JSONDecodeError:
-                        # Skip non-JSON messages (binary previews)
-                        continue
                     except websocket.WebSocketTimeoutException:
+                        now_ts = time.time()
+                        if prompt_id and now_ts - last_history_poll >= 5:
+                            last_history_poll = now_ts
+                            try:
+                                history_resp = self._request_with_retry(
+                                    "get",
+                                    f"http://127.0.0.1:8188/history/{prompt_id}",
+                                    timeout=5,
+                                    retries=2,
+                                )
+                                history = history_resp.json()
+                                history_resp.close()
+                                prompt_history = history.get(prompt_id, {})
+                                workflow_nodes = (
+                                    prompt_history.get("workflow", {}).get("nodes", [])
+                                )
+                                if workflow_nodes and not node_order:
+                                    _set_node_order([n.get("id") for n in workflow_nodes if n.get("id")])
+                                    job_data["nodes_total"] = len(node_order)
+                                outputs = prompt_history.get("outputs", {})
+                                if outputs:
+                                    executed_nodes.update(str(node) for node in outputs.keys())
+                                    job_data["nodes_done"] = len(executed_nodes)
+                                    prev = job_data.get("progress", 0)
+                                    job_data["progress"] = _compute_progress()
+                                    _persist(progress_changed=job_data["progress"] != prev)
+                            except Exception as poll_err:
+                                print(f"Progress poll failed: {poll_err}")
                         continue
-                    except Exception as e:
-                        print(f"WebSocket error: {e}")
-                        break
-                    
+
+                    if isinstance(raw_msg, bytes):
+                        continue
+
+                    try:
+                        msg = json.loads(raw_msg)
+                    except json.JSONDecodeError:
+                        continue
+
+                    msg_type = msg.get("type")
+                    data = msg.get("data", {})
+
+                    if msg_type == "execution_start" and data.get("prompt_id") == prompt_id:
+                        nodes = data.get("nodes") or []
+                        _set_node_order(nodes)
+                        job_data["nodes_total"] = len(node_order)
+                        _persist()
+                        continue
+
+                    if msg_type == "executing" and data.get("prompt_id") == prompt_id:
+                        node = data.get("node")
+                        if node is None:
+                            print("✅ Execution complete!")
+                            break
+                        job_data["current_node"] = str(node)
+                        _persist()
+                        continue
+
+                    if msg_type == "execution_cached" and data.get("prompt_id") == prompt_id:
+                        node = data.get("node")
+                        if node is not None:
+                            cached_nodes.add(str(node))
+                            executed_nodes.add(str(node))
+                            job_data["nodes_done"] = len(executed_nodes)
+                            prev = job_data.get("progress", 0)
+                            job_data["progress"] = _compute_progress()
+                            _persist(progress_changed=job_data["progress"] != prev)
+                        continue
+
+                    if msg_type == "executed" and data.get("prompt_id") == prompt_id:
+                        node = data.get("node")
+                        if node is not None:
+                            executed_nodes.add(str(node))
+                            job_data["nodes_done"] = len(executed_nodes)
+                            job_data["current_node"] = None
+                            prev = job_data.get("progress", 0)
+                            job_data["progress"] = _compute_progress()
+                            _persist(progress_changed=job_data["progress"] != prev)
+                        continue
+
+                    if msg_type == "progress" and data.get("prompt_id") == prompt_id:
+                        current_partial[0] = float(data.get("value", 0) or 0)
+                        current_partial[1] = float(data.get("max", 1) or 1)
+                        prev = job_data.get("progress", 0)
+                        job_data["progress"] = _compute_progress()
+                        _persist(progress_changed=job_data["progress"] != prev)
+                        continue
+
+                    if msg_type == "execution_error" and data.get("prompt_id") == prompt_id:
+                        raise RuntimeError(f"Execution error: {data}")
+
             finally:
-                ws.close()
-            
-            # Get outputs with retry logic
-            outputs = []
-            for retry in range(3):
-                try:
-                    history_response = requests.get(
-                        f"http://localhost:8188/history/{prompt_id}",
-                        timeout=30
-                    )
-                    history = history_response.json()
-                    
-                    if prompt_id in history:
-                        for node_id, node_output in history[prompt_id].get("outputs", {}).items():
-                            # Handle text outputs
-                            if "text" in node_output:
-                                for text_item in node_output["text"]:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+            outputs: List[Dict[str, Any]] = []
+            if prompt_id:
+                for retry in range(3):
+                    try:
+                        history_response = self._request_with_retry(
+                            "get",
+                            f"http://127.0.0.1:8188/history/{prompt_id}",
+                            timeout=30,
+                        )
+                        history = history_response.json()
+                        history_response.close()
+
+                        if prompt_id in history:
+                            for node_id, node_output in history[prompt_id].get("outputs", {}).items():
+                                if "text" in node_output:
+                                    for text_item in node_output["text"]:
+                                        outputs.append({
+                                            "node_id": node_id,
+                                            "type": "text",
+                                            "data": text_item,
+                                            "filename": f"text_output_{node_id}.txt",
+                                            "size_bytes": len(text_item.encode("utf-8")),
+                                        })
+                                if "ui" in node_output:
+                                    ui_data = json.dumps(node_output["ui"])
                                     outputs.append({
                                         "node_id": node_id,
-                                        "type": "text",
-                                        "data": text_item,
-                                        "filename": f"text_output_{node_id}.txt",
-                                        "size_bytes": len(text_item.encode('utf-8'))
+                                        "type": "json",
+                                        "data": ui_data,
+                                        "filename": f"ui_output_{node_id}.json",
+                                        "size_bytes": len(ui_data.encode("utf-8")),
                                     })
-                            
-                            # Handle UI/custom outputs (JSON data)
-                            if "ui" in node_output:
-                                ui_data = json.dumps(node_output["ui"])
-                                outputs.append({
-                                    "node_id": node_id,
-                                    "type": "json",
-                                    "data": ui_data,
-                                    "filename": f"ui_output_{node_id}.json",
-                                    "size_bytes": len(ui_data.encode('utf-8'))
-                                })
-                            
-                            # Handle media outputs (existing code)
-                            for media_type in ["images", "videos", "gifs", "audio"]:
-                                if media_type in node_output:
-                                    for file_info in node_output[media_type]:
-                                        # Get file with timeout
-                                        file_response = requests.get(
-                                            "http://localhost:8188/view",
-                                            params={
+                                for media_type in ["images", "videos", "gifs", "audio"]:
+                                    if media_type in node_output:
+                                        for file_info in node_output[media_type]:
+                                            with self._request_with_retry(
+                                                "get",
+                                                "http://127.0.0.1:8188/view",
+                                                params={
+                                                    "filename": file_info["filename"],
+                                                    "subfolder": file_info.get("subfolder", ""),
+                                                    "type": file_info.get("type", "output"),
+                                                },
+                                                timeout=120,
+                                                stream=True,
+                                            ) as file_response:
+                                                chunks: List[bytes] = []
+                                                for chunk in file_response.iter_content(1 << 20):
+                                                    if chunk:
+                                                        chunks.append(chunk)
+                                                payload = b"".join(chunks)
+                                            outputs.append({
                                                 "filename": file_info["filename"],
-                                                "subfolder": file_info.get("subfolder", ""),
-                                                "type": file_info.get("type", "output")
-                                            },
-                                            timeout=60  # Longer timeout for large files
-                                        )
-                                        
-                                        outputs.append({
-                                            "filename": file_info["filename"],
-                                            "data": base64.b64encode(file_response.content).decode(),
-                                            "type": self._get_media_type(file_info["filename"]),
-                                            "size_bytes": len(file_response.content)
-                                        })
-                        break
-                except Exception as e:
-                    if retry == 2:
-                        raise
-                    print(f"Retry {retry + 1}: Failed to get outputs: {e}")
-                    time.sleep(2)
-            
-            # Update job as completed
+                                                "data": base64.b64encode(payload).decode(),
+                                                "type": self._get_media_type(file_info["filename"]),
+                                                "size_bytes": len(payload),
+                                            })
+                            break
+                    except Exception as e:
+                        if retry == 2:
+                            raise
+                        print(f"Retry {retry + 1}: Failed to get outputs: {e}")
+                        time.sleep(2)
+
             job_data["status"] = "completed"
             job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
             job_data["outputs"] = outputs
             job_data["progress"] = 100
-            
-            with job_volume_guard(commit=True):
-                with open(job_file, 'w') as f:
-                    json.dump(job_data, f)
-            
-            # Send webhook
+            job_data["current_node"] = None
+            job_data["nodes_done"] = len(executed_nodes) if executed_nodes else job_data.get("nodes_done", 0)
+
+            self._persist_job(job_file, job_data, commit=True)
+
             if job_data.get("webhook_url"):
                 self._send_webhook(job_data["webhook_url"], job_id, "job.completed")
-            
+
             print(f"✨ Job {job_id} completed successfully!")
-            
+
         except Exception as e:
             print(f"❌ Job {job_id} failed: {e}")
-            # Update job as failed
             try:
-                job_file = Path(JOB_DIR) / f"{job_id}.json"
-                job_data = None
                 if job_file.exists():
-                    with job_volume_guard(reload=True, commit=True):
-                        with open(job_file, 'r') as f:
+                    with job_volume_guard(reload=True):
+                        with open(job_file, "r") as f:
                             job_data = json.load(f)
+                else:
+                    job_data = {
+                        "job_id": job_id,
+                        "status": "failed",
+                    }
 
-                        job_data["status"] = "failed"
-                        job_data["error"] = str(e)
-                        job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+                job_data["status"] = "failed"
+                job_data["error"] = str(e)
+                job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+                job_data.setdefault("error_log_tail", list(self._log_tail)[-50:])
 
-                        with open(job_file, 'w') as f:
-                            json.dump(job_data, f)
+                self._persist_job(job_file, job_data, commit=True)
 
-                    if job_data and job_data.get("webhook_url"):
-                        self._send_webhook(job_data["webhook_url"], job_id, "job.failed")
+                if job_data.get("webhook_url"):
+                    self._send_webhook(job_data["webhook_url"], job_id, "job.failed")
             except Exception as inner_err:
                 print(f"⚠️ Failed to persist failure state for job {job_id}: {inner_err}")
-            
             raise
-    
+        finally:
+            shutil.rmtree(job_input_dir, ignore_errors=True)
+
     def _get_media_type(self, filename: str) -> str:
         """Enhanced media type detection"""
         ext = Path(filename).suffix[1:].lower() if Path(filename).suffix else ""
@@ -760,10 +959,20 @@ class ComfyService:
                 "job_id": job_id,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            with httpx.Client(timeout=10) as client:
-                client.post(webhook_url, json=payload)
-        except:
-            pass  # Silently fail
+            backoff = 1.0
+            for attempt in range(3):
+                try:
+                    with httpx.Client(timeout=10) as client:
+                        response = client.post(webhook_url, json=payload)
+                        response.raise_for_status()
+                    return
+                except Exception as exc:
+                    if attempt == 2:
+                        print(f"⚠️ Webhook delivery failed for job {job_id}: {exc}")
+                    time.sleep(backoff)
+                    backoff *= 2
+        except Exception as outer_exc:
+            print(f"⚠️ Webhook exception for job {job_id}: {outer_exc}")
 
 # FastAPI app
 web_app = FastAPI(
@@ -772,16 +981,22 @@ web_app = FastAPI(
     version="2.1.0"
 )
 
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+web_app.state.limiter = limiter
+web_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+web_app.add_middleware(SlowAPIMiddleware)
+
 @web_app.post("/v1/jobs", response_model=JobResponse)
-async def create_job(request: JobRequest, background_tasks: BackgroundTasks):
+@limiter.limit("10/minute")
+async def create_job(request: Request, job_request: JobRequest):
     """Submit a new ComfyUI job"""
-    if not request.workflow:
+    if not job_request.workflow:
         raise HTTPException(status_code=400, detail="Workflow cannot be empty")
     
-    if len(request.media) > 10:
+    if len(job_request.media) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 media files allowed")
     
-    for media in request.media:
+    for media in job_request.media:
         if media.data:
             estimated_size = len(media.data) * 3 / 4
             if estimated_size > 50 * 1024 * 1024:
@@ -794,13 +1009,19 @@ async def create_job(request: JobRequest, background_tasks: BackgroundTasks):
         "job_id": job_id,
         "status": "queued",
         "created_at": now.isoformat(),
-        "workflow": request.workflow,
-        "inputs": [inp.dict() for inp in request.inputs],
-        "media": [media.dict() for media in request.media],
-        "webhook_url": request.webhook_url,
-        "priority": request.priority,
+        "last_event_time": now.isoformat(),
+        "workflow": job_request.workflow,
+        "inputs": [inp.model_dump() for inp in job_request.inputs],
+        "media": [media.model_dump() for media in job_request.media],
+        "webhook_url": job_request.webhook_url,
+        "priority": job_request.priority,
         "progress": 0,
-        "outputs": []
+        "outputs": [],
+        "prompt_id": None,
+        "nodes_total": 0,
+        "nodes_done": 0,
+        "current_node": None,
+        "error_log_tail": []
     }
     
     # Save job
@@ -810,8 +1031,8 @@ async def create_job(request: JobRequest, background_tasks: BackgroundTasks):
         with open(job_file, 'w') as f:
             json.dump(job_data, f)
     
-    # Submit job asynchronously (use .remote() not .spawn())
-    ComfyService().process_job.remote(job_id)
+    # Submit job asynchronously; spawn() schedules the work without blocking
+    ComfyService().process_job.spawn(job_id)
     
     return JobResponse(
         job_id=job_id,
@@ -821,24 +1042,17 @@ async def create_job(request: JobRequest, background_tasks: BackgroundTasks):
     )
 
 @web_app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
-    """Get job status with caching"""
-    # Only reload if needed (check file modification time)
+@limiter.limit("120/minute")
+async def get_job_status(request: Request, job_id: str):
+    """Get job status"""
     job_file = Path(JOB_DIR) / f"{job_id}.json"
-    
-    # Implement simple caching to reduce volume reloads
-    cache_key = f"{job_id}_cache"
-    needs_reload = not hasattr(get_job_status, cache_key)
-    with job_volume_guard(reload=needs_reload):
+
+    with job_volume_guard(reload=True):
         if not job_file.exists():
             raise HTTPException(status_code=404, detail="Job not found")
         with open(job_file, 'r') as f:
             job_data = json.load(f)
-    
-    # Cache for 2 seconds for running jobs, longer for completed
-    if job_data["status"] in ["completed", "failed"]:
-        setattr(get_job_status, cache_key, True)
-    
+
     return JobStatusResponse(
         job_id=job_id,
         status=job_data["status"],
@@ -847,11 +1061,18 @@ async def get_job_status(job_id: str):
         completed_at=datetime.fromisoformat(job_data["completed_at"]) if job_data.get("completed_at") else None,
         progress=job_data.get("progress", 0),
         outputs=job_data.get("outputs", []),
-        error=job_data.get("error")
+        error=job_data.get("error"),
+        prompt_id=job_data.get("prompt_id"),
+        nodes_total=job_data.get("nodes_total", 0),
+        nodes_done=job_data.get("nodes_done", 0),
+        current_node=job_data.get("current_node"),
+        last_event_time=datetime.fromisoformat(job_data["last_event_time"]) if job_data.get("last_event_time") else None,
+        error_log_tail=job_data.get("error_log_tail", []),
     )
 
 @web_app.delete("/v1/jobs/{job_id}")
-async def cancel_job(job_id: str):
+@limiter.limit("30/minute")
+async def cancel_job(request: Request, job_id: str):
     """Cancel a job"""
     job_file = Path(JOB_DIR) / f"{job_id}.json"
 
@@ -864,9 +1085,23 @@ async def cancel_job(job_id: str):
     if job_data["status"] in ["completed", "failed"]:
         return {"message": "Job already completed"}
 
+    prompt_id = job_data.get("prompt_id")
+    if job_data["status"] == "running" and prompt_id:
+        try:
+            requests.post("http://127.0.0.1:8188/interrupt", timeout=5)
+            requests.post(
+                "http://127.0.0.1:8188/queue/cancel",
+                json={"prompt_id": prompt_id},
+                timeout=5,
+            )
+        except Exception as exc:
+            print(f"⚠️ Failed to cancel prompt {prompt_id}: {exc}")
+
     job_data["status"] = "failed"
     job_data["error"] = "Cancelled by user"
     job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+    job_data["current_node"] = None
+    job_data["last_event_time"] = datetime.now(timezone.utc).isoformat()
 
     with job_volume_guard(commit=True):
         with open(job_file, 'w') as f:
@@ -875,7 +1110,8 @@ async def cancel_job(job_id: str):
     return {"message": "Job cancelled"}
 
 @web_app.get("/v1/jobs")
-async def list_jobs(status: Optional[JobStatus] = None, limit: int = 50):
+@limiter.limit("30/minute")
+async def list_jobs(request: Request, status: Optional[JobStatus] = None, limit: int = 50):
     """List recent jobs"""
     job_path = Path(JOB_DIR)
 
@@ -905,9 +1141,10 @@ async def health_check():
 
 # Deploy the API
 @app.function(
-    image=image.pip_install("fastapi[standard]"),
+    image=api_image,
     max_containers=3,
-    volumes={JOB_DIR: job_volume}
+    volumes={JOB_DIR: job_volume},
+    timeout=300  # Increase timeout to 5 minutes for API endpoints
 )
 @modal.asgi_app()
 def api():
