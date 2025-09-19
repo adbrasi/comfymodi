@@ -3,8 +3,10 @@ import uuid
 import base64
 import time
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Dict, List, Optional, Any
 from enum import Enum
 
@@ -24,6 +26,24 @@ CACHE_DIR = "/cache"
 # Job storage volume (persistent across deployments)
 job_volume = modal.Volume.from_name("job-storage", create_if_missing=True)
 JOB_DIR = "/jobs"
+
+# Guards volume reload/commit so concurrent threads in the same container
+# (enabled via @modal.concurrent) do not reload while another one still has
+# a file handle open. This avoids "there are open files" runtime errors.
+job_volume_lock = RLock()
+
+@contextmanager
+def job_volume_guard(*, reload: bool = False, commit: bool = False):
+    with job_volume_lock:
+        if reload:
+            job_volume.reload()
+        try:
+            yield
+        except Exception:
+            raise
+        else:
+            if commit:
+                job_volume.commit()
 
 # ComfyUI paths (these will be symlinks)
 COMFY_DIR = Path("/root/comfy/ComfyUI")
@@ -325,9 +345,9 @@ image = (
     },
     enable_memory_snapshot=True,  # CRITICAL: Re-enable for 10x speed
     scaledown_window=100,
-    max_containers=1,
+    max_containers=4,
 )
-@modal.concurrent(max_inputs=5)
+@modal.concurrent(max_inputs=1)
 class ComfyService:
     
     @modal.enter(snap=True)  # Snapshot WITHOUT starting ComfyUI
@@ -435,18 +455,19 @@ class ComfyService:
         progress_update_counter = 0
         
         try:
-            # Load job (reload volume only once at start)
-            job_volume.reload()
             job_file = Path(JOB_DIR) / f"{job_id}.json"
-            with open(job_file, 'r') as f:
-                job_data = json.load(f)
-            
-            # Update status to running
-            job_data["status"] = "running"
-            job_data["started_at"] = datetime.now(timezone.utc).isoformat()
-            with open(job_file, 'w') as f:
-                json.dump(job_data, f)
-            job_volume.commit()
+            with job_volume_guard(reload=True, commit=True):
+                if not job_file.exists():
+                    raise FileNotFoundError(f"Job {job_id} not found on volume")
+                with open(job_file, 'r') as f:
+                    job_data = json.load(f)
+
+                # Update status to running
+                job_data["status"] = "running"
+                job_data["started_at"] = datetime.now(timezone.utc).isoformat()
+
+                with open(job_file, 'w') as f:
+                    json.dump(job_data, f)
             
             # Process workflow
             workflow = job_data["workflow"]
@@ -594,9 +615,9 @@ class ComfyService:
                         
                         # Batch commit - only commit if enough time has passed
                         if time.time() - last_commit_time > commit_interval:
-                            with open(job_file, 'w') as f:
-                                json.dump(job_data, f)
-                            job_volume.commit()
+                            with job_volume_guard(commit=True):
+                                with open(job_file, 'w') as f:
+                                    json.dump(job_data, f)
                             last_commit_time = time.time()
                             
                     except json.JSONDecodeError:
@@ -679,9 +700,9 @@ class ComfyService:
             job_data["outputs"] = outputs
             job_data["progress"] = 100
             
-            with open(job_file, 'w') as f:
-                json.dump(job_data, f)
-            job_volume.commit()
+            with job_volume_guard(commit=True):
+                with open(job_file, 'w') as f:
+                    json.dump(job_data, f)
             
             # Send webhook
             if job_data.get("webhook_url"):
@@ -694,22 +715,23 @@ class ComfyService:
             # Update job as failed
             try:
                 job_file = Path(JOB_DIR) / f"{job_id}.json"
+                job_data = None
                 if job_file.exists():
-                    with open(job_file, 'r') as f:
-                        job_data = json.load(f)
-                    
-                    job_data["status"] = "failed"
-                    job_data["error"] = str(e)
-                    job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
-                    
-                    with open(job_file, 'w') as f:
-                        json.dump(job_data, f)
-                    job_volume.commit()
-                    
-                    if job_data.get("webhook_url"):
+                    with job_volume_guard(reload=True, commit=True):
+                        with open(job_file, 'r') as f:
+                            job_data = json.load(f)
+
+                        job_data["status"] = "failed"
+                        job_data["error"] = str(e)
+                        job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+                        with open(job_file, 'w') as f:
+                            json.dump(job_data, f)
+
+                    if job_data and job_data.get("webhook_url"):
                         self._send_webhook(job_data["webhook_url"], job_id, "job.failed")
-            except:
-                pass
+            except Exception as inner_err:
+                print(f"⚠️ Failed to persist failure state for job {job_id}: {inner_err}")
             
             raise
     
@@ -783,10 +805,10 @@ async def create_job(request: JobRequest, background_tasks: BackgroundTasks):
     
     # Save job
     job_file = Path(JOB_DIR) / f"{job_id}.json"
-    job_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(job_file, 'w') as f:
-        json.dump(job_data, f)
-    job_volume.commit()
+    with job_volume_guard(commit=True):
+        job_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(job_file, 'w') as f:
+            json.dump(job_data, f)
     
     # Submit job asynchronously (use .remote() not .spawn())
     ComfyService().process_job.remote(job_id)
@@ -806,14 +828,12 @@ async def get_job_status(job_id: str):
     
     # Implement simple caching to reduce volume reloads
     cache_key = f"{job_id}_cache"
-    if not hasattr(get_job_status, cache_key):
-        job_volume.reload()
-    
-    if not job_file.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    with open(job_file, 'r') as f:
-        job_data = json.load(f)
+    needs_reload = not hasattr(get_job_status, cache_key)
+    with job_volume_guard(reload=needs_reload):
+        if not job_file.exists():
+            raise HTTPException(status_code=404, detail="Job not found")
+        with open(job_file, 'r') as f:
+            job_data = json.load(f)
     
     # Cache for 2 seconds for running jobs, longer for completed
     if job_data["status"] in ["completed", "failed"]:
@@ -833,49 +853,48 @@ async def get_job_status(job_id: str):
 @web_app.delete("/v1/jobs/{job_id}")
 async def cancel_job(job_id: str):
     """Cancel a job"""
-    job_volume.reload()
     job_file = Path(JOB_DIR) / f"{job_id}.json"
-    
-    if not job_file.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    with open(job_file, 'r') as f:
-        job_data = json.load(f)
-    
+
+    with job_volume_guard(reload=True):
+        if not job_file.exists():
+            raise HTTPException(status_code=404, detail="Job not found")
+        with open(job_file, 'r') as f:
+            job_data = json.load(f)
+
     if job_data["status"] in ["completed", "failed"]:
         return {"message": "Job already completed"}
-    
+
     job_data["status"] = "failed"
     job_data["error"] = "Cancelled by user"
     job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
-    
-    with open(job_file, 'w') as f:
-        json.dump(job_data, f)
-    job_volume.commit()
-    
+
+    with job_volume_guard(commit=True):
+        with open(job_file, 'w') as f:
+            json.dump(job_data, f)
+
     return {"message": "Job cancelled"}
 
 @web_app.get("/v1/jobs")
 async def list_jobs(status: Optional[JobStatus] = None, limit: int = 50):
     """List recent jobs"""
-    job_volume.reload()
     job_path = Path(JOB_DIR)
-    
+
     jobs = []
-    if job_path.exists():
-        for job_file in sorted(job_path.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:limit]:
-            try:
-                with open(job_file, 'r') as f:
-                    job_data = json.load(f)
-                if not status or job_data["status"] == status:
-                    jobs.append({
-                        "job_id": job_data["job_id"],
-                        "status": job_data["status"],
-                        "created_at": job_data["created_at"],
-                        "progress": job_data.get("progress", 0)
-                    })
-            except:
-                continue
+    with job_volume_guard(reload=True):
+        if job_path.exists():
+            for job_file in sorted(job_path.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:limit]:
+                try:
+                    with open(job_file, 'r') as f:
+                        job_data = json.load(f)
+                    if not status or job_data["status"] == status:
+                        jobs.append({
+                            "job_id": job_data["job_id"],
+                            "status": job_data["status"],
+                            "created_at": job_data["created_at"],
+                            "progress": job_data.get("progress", 0)
+                        })
+                except Exception:
+                    continue
     
     return {"jobs": jobs}
 
@@ -939,17 +958,17 @@ def cleanup_old_jobs():
     JOB_DIR = "/jobs"  # Define locally to avoid import issues
     job_path = Path(JOB_DIR)
     if job_path.exists():
-        for job_file in job_path.glob("*.json"):
-            try:
-                with open(job_file, 'r') as f:
-                    job_data = json.load(f)
-                created = datetime.fromisoformat(job_data["created_at"])
-                if created < cutoff:
-                    job_file.unlink()
-                    print(f"Deleted old job: {job_file.name}")
-            except:
-                continue
-        job_volume.commit()
+        with job_volume_guard(reload=True, commit=True):
+            for job_file in job_path.glob("*.json"):
+                try:
+                    with open(job_file, 'r') as f:
+                        job_data = json.load(f)
+                    created = datetime.fromisoformat(job_data["created_at"])
+                    if created < cutoff:
+                        job_file.unlink()
+                        print(f"Deleted old job: {job_file.name}")
+                except Exception:
+                    continue
     
     # Clean temp files
     CACHE_DIR = "/cache"  # Define locally to avoid import issues
