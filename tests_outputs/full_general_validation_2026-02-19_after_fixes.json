@@ -1,0 +1,421 @@
+{
+  "started_at": "2026-02-19T22:33:29.530325+00:00",
+  "api": "https://cezarsaint--comfyui-saas-api.modal.run",
+  "tests": [
+    {
+      "name": "health_200",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"status\":\"ok\",\"timestamp\":\"2026-02-19T22:33:28.253665+00:00\"}"
+      }
+    },
+    {
+      "name": "auth_invalid_key_rejected",
+      "ok": true,
+      "details": {
+        "status": 401,
+        "expected": 401,
+        "body": "{\"detail\":\"Invalid API key\"}"
+      }
+    },
+    {
+      "name": "missing_x_user_id_rejected",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"Missing required X-User-ID header\"}"
+      }
+    },
+    {
+      "name": "empty_workflow_rejected",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"Workflow cannot be empty\"}"
+      }
+    },
+    {
+      "name": "user_id_mismatch_rejected",
+      "ok": true,
+      "details": {
+        "status": 403,
+        "expected": 403,
+        "body": "{\"detail\":\"user_id must match caller X-User-ID\"}"
+      }
+    },
+    {
+      "name": "ssrf_localhost_blocked",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"media 'x.png' url host 'localhost' is restricted\"}"
+      }
+    },
+    {
+      "name": "e2e_create_job",
+      "ok": true,
+      "details": {
+        "job_id": "77aac3b6-909f-4efe-b11a-20452acdf3a5"
+      }
+    },
+    {
+      "name": "e2e_job_completed_with_output",
+      "ok": true,
+      "details": {
+        "status": "completed",
+        "outputs": 1,
+        "progress": 100
+      }
+    },
+    {
+      "name": "e2e_output_downloadable",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "bytes": 256015,
+        "file": "/mnt/d/adolfocesar/code/modal_arrakis/tests_outputs/fullcheck_e2e_afterfix_77aac3b6_0.png"
+      }
+    },
+    {
+      "name": "ownership_enforced_get_job",
+      "ok": true,
+      "details": {
+        "status": 404,
+        "expected": 404,
+        "body": "{\"detail\":\"Job not found\"}"
+      }
+    },
+    {
+      "name": "list_filter_mismatch_rejected",
+      "ok": true,
+      "details": {
+        "status": 403,
+        "expected": 403,
+        "body": "{\"detail\":\"user_id filter must match caller X-User-ID\"}"
+      }
+    },
+    {
+      "name": "signed_url_reissued",
+      "ok": true,
+      "details": {
+        "changed": true
+      }
+    },
+    {
+      "name": "cancel_create_job",
+      "ok": true,
+      "details": {
+        "job_id": "fdb8cbcc-9f13-42c3-9c60-b444432a24e5"
+      }
+    },
+    {
+      "name": "cancel_endpoint_accepts",
+      "ok": false,
+      "details": {
+        "reason": "did not reach running in time",
+        "state": {
+          "ok": true,
+          "data": {
+            "job_id": "fdb8cbcc-9f13-42c3-9c60-b444432a24e5",
+            "status": "completed",
+            "created_at": "2026-02-19T22:34:22.804973+00:00",
+            "started_at": "2026-02-19T22:34:28.075050+00:00",
+            "completed_at": "2026-02-19T22:35:14.914836+00:00",
+            "user_id": "qa_cancel_81e688",
+            "progress": 100,
+            "current_step": 0,
+            "total_steps": 0,
+            "current_node": null,
+            "nodes_done": 1,
+            "nodes_total": 7,
+            "outputs": [
+              {
+                "filename": "ComfyUI_00029_.png",
+                "type": "image",
+                "size_bytes": 369204,
+                "url": "https://287c1977befea62f2052777a86ed6588.r2.cloudflarestorage.com/comfyui-outputs/outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=132a7bb0d0c9ce413a220f19d0ee3f11%2F20260219%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260219T223517Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=4d6bc741912b5a00f3fc7effe8d39e599d914d790119444f63f6ae79f49fa4d0",
+                "r2_key": "outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png"
+              }
+            ],
+            "error": null,
+            "logs": [
+              "[22:34:29] Job started",
+              "[22:34:29] Override node=4 field=ckpt_name",
+              "[22:34:29] Override node=6 field=text",
+              "[22:34:29] Override node=53 field=seed",
+              "[22:34:29] Override node=53 field=steps",
+              "[22:34:29] Override node=5 field=width",
+              "[22:34:29] Override node=5 field=height",
+              "[22:34:29] Prompt submitted: 8774bf83-e758-4899-b6a6-1461b0402a2c",
+              "[22:34:29] Execution started — 0 nodes planned",
+              "[22:34:30] Executing node 4 (CheckpointLoaderSimple)",
+              "[22:34:36] Executing node 5 (EmptyLatentImage)",
+              "[22:34:37] Executing node 7 (CLIPTextEncode)",
+              "[22:34:38] Executing node 6 (CLIPTextEncode)",
+              "[22:34:39] Executing node 53 (KSampler)",
+              "[22:35:04] Executing node 17 (VAEDecode)",
+              "[22:35:06] Executing node 19 (SaveImage)",
+              "[22:35:08] Node 19 completed (1/7)",
+              "[22:35:13] All nodes executed — workflow complete",
+              "[22:35:13] WebSocket closed",
+              "[22:35:14] Collecting outputs ...",
+              "[22:35:14] Uploaded ComfyUI_00029_.png to R2 (360KB)",
+              "[22:35:14] Completed! 1 output(s) | elapsed: 46.8s"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "cancel_reaches_terminal",
+      "ok": false,
+      "details": {
+        "reason": "did not reach running in time",
+        "state": {
+          "ok": true,
+          "data": {
+            "job_id": "fdb8cbcc-9f13-42c3-9c60-b444432a24e5",
+            "status": "completed",
+            "created_at": "2026-02-19T22:34:22.804973+00:00",
+            "started_at": "2026-02-19T22:34:28.075050+00:00",
+            "completed_at": "2026-02-19T22:35:14.914836+00:00",
+            "user_id": "qa_cancel_81e688",
+            "progress": 100,
+            "current_step": 0,
+            "total_steps": 0,
+            "current_node": null,
+            "nodes_done": 1,
+            "nodes_total": 7,
+            "outputs": [
+              {
+                "filename": "ComfyUI_00029_.png",
+                "type": "image",
+                "size_bytes": 369204,
+                "url": "https://287c1977befea62f2052777a86ed6588.r2.cloudflarestorage.com/comfyui-outputs/outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=132a7bb0d0c9ce413a220f19d0ee3f11%2F20260219%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260219T223517Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=4d6bc741912b5a00f3fc7effe8d39e599d914d790119444f63f6ae79f49fa4d0",
+                "r2_key": "outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png"
+              }
+            ],
+            "error": null,
+            "logs": [
+              "[22:34:29] Job started",
+              "[22:34:29] Override node=4 field=ckpt_name",
+              "[22:34:29] Override node=6 field=text",
+              "[22:34:29] Override node=53 field=seed",
+              "[22:34:29] Override node=53 field=steps",
+              "[22:34:29] Override node=5 field=width",
+              "[22:34:29] Override node=5 field=height",
+              "[22:34:29] Prompt submitted: 8774bf83-e758-4899-b6a6-1461b0402a2c",
+              "[22:34:29] Execution started — 0 nodes planned",
+              "[22:34:30] Executing node 4 (CheckpointLoaderSimple)",
+              "[22:34:36] Executing node 5 (EmptyLatentImage)",
+              "[22:34:37] Executing node 7 (CLIPTextEncode)",
+              "[22:34:38] Executing node 6 (CLIPTextEncode)",
+              "[22:34:39] Executing node 53 (KSampler)",
+              "[22:35:04] Executing node 17 (VAEDecode)",
+              "[22:35:06] Executing node 19 (SaveImage)",
+              "[22:35:08] Node 19 completed (1/7)",
+              "[22:35:13] All nodes executed — workflow complete",
+              "[22:35:13] WebSocket closed",
+              "[22:35:14] Collecting outputs ...",
+              "[22:35:14] Uploaded ComfyUI_00029_.png to R2 (360KB)",
+              "[22:35:14] Completed! 1 output(s) | elapsed: 46.8s"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "cancel_effective",
+      "ok": false,
+      "details": {
+        "reason": "did not reach running in time",
+        "state": {
+          "ok": true,
+          "data": {
+            "job_id": "fdb8cbcc-9f13-42c3-9c60-b444432a24e5",
+            "status": "completed",
+            "created_at": "2026-02-19T22:34:22.804973+00:00",
+            "started_at": "2026-02-19T22:34:28.075050+00:00",
+            "completed_at": "2026-02-19T22:35:14.914836+00:00",
+            "user_id": "qa_cancel_81e688",
+            "progress": 100,
+            "current_step": 0,
+            "total_steps": 0,
+            "current_node": null,
+            "nodes_done": 1,
+            "nodes_total": 7,
+            "outputs": [
+              {
+                "filename": "ComfyUI_00029_.png",
+                "type": "image",
+                "size_bytes": 369204,
+                "url": "https://287c1977befea62f2052777a86ed6588.r2.cloudflarestorage.com/comfyui-outputs/outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=132a7bb0d0c9ce413a220f19d0ee3f11%2F20260219%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260219T223517Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=4d6bc741912b5a00f3fc7effe8d39e599d914d790119444f63f6ae79f49fa4d0",
+                "r2_key": "outputs/fdb8cbcc-9f13-42c3-9c60-b444432a24e5/ComfyUI_00029_.png"
+              }
+            ],
+            "error": null,
+            "logs": [
+              "[22:34:29] Job started",
+              "[22:34:29] Override node=4 field=ckpt_name",
+              "[22:34:29] Override node=6 field=text",
+              "[22:34:29] Override node=53 field=seed",
+              "[22:34:29] Override node=53 field=steps",
+              "[22:34:29] Override node=5 field=width",
+              "[22:34:29] Override node=5 field=height",
+              "[22:34:29] Prompt submitted: 8774bf83-e758-4899-b6a6-1461b0402a2c",
+              "[22:34:29] Execution started — 0 nodes planned",
+              "[22:34:30] Executing node 4 (CheckpointLoaderSimple)",
+              "[22:34:36] Executing node 5 (EmptyLatentImage)",
+              "[22:34:37] Executing node 7 (CLIPTextEncode)",
+              "[22:34:38] Executing node 6 (CLIPTextEncode)",
+              "[22:34:39] Executing node 53 (KSampler)",
+              "[22:35:04] Executing node 17 (VAEDecode)",
+              "[22:35:06] Executing node 19 (SaveImage)",
+              "[22:35:08] Node 19 completed (1/7)",
+              "[22:35:13] All nodes executed — workflow complete",
+              "[22:35:13] WebSocket closed",
+              "[22:35:14] Collecting outputs ...",
+              "[22:35:14] Uploaded ComfyUI_00029_.png to R2 (360KB)",
+              "[22:35:14] Completed! 1 output(s) | elapsed: 46.8s"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "stress_burst_has_accepts",
+      "ok": true,
+      "details": {
+        "accepted": 6
+      }
+    },
+    {
+      "name": "stress_burst_enforces_user_limit",
+      "ok": false,
+      "details": {
+        "accepted": 6,
+        "rejected_429": 2,
+        "other_errors": 0
+      }
+    },
+    {
+      "name": "stress_burst_no_unexpected_http",
+      "ok": true,
+      "details": {
+        "other_errors": []
+      }
+    },
+    {
+      "name": "stress_jobs_terminal",
+      "ok": true,
+      "details": {
+        "completed": 3,
+        "failed": 0,
+        "cancelled": 3,
+        "unknown": 0
+      }
+    }
+  ],
+  "artifacts": {
+    "e2e_image": "/mnt/d/adolfocesar/code/modal_arrakis/tests_outputs/fullcheck_e2e_afterfix_77aac3b6_0.png",
+    "stress_submissions": [
+      {
+        "idx": 2,
+        "status": 200,
+        "latency_s": 5.876,
+        "body": "{\"job_id\":\"5071406d-8d26-400b-82a2-986d466c7183\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:18.025984+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "5071406d-8d26-400b-82a2-986d466c7183"
+      },
+      {
+        "idx": 0,
+        "status": 200,
+        "latency_s": 8.835,
+        "body": "{\"job_id\":\"c9a5e468-04a3-4eb1-9b4c-ad2fefeb690a\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:22.096283+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "c9a5e468-04a3-4eb1-9b4c-ad2fefeb690a"
+      },
+      {
+        "idx": 5,
+        "status": 429,
+        "latency_s": 13.734,
+        "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}",
+        "job_id": null
+      },
+      {
+        "idx": 7,
+        "status": 200,
+        "latency_s": 14.35,
+        "body": "{\"job_id\":\"7483f9ec-a861-47e1-9d82-aecadc4a5973\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:22.559856+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "7483f9ec-a861-47e1-9d82-aecadc4a5973"
+      },
+      {
+        "idx": 3,
+        "status": 200,
+        "latency_s": 15.18,
+        "body": "{\"job_id\":\"596e4494-44f0-4bac-bc6c-0c7e5a6f4b4c\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:22.290176+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "596e4494-44f0-4bac-bc6c-0c7e5a6f4b4c"
+      },
+      {
+        "idx": 4,
+        "status": 200,
+        "latency_s": 16.156,
+        "body": "{\"job_id\":\"dd9ce62c-5c67-42a3-87ae-1c7fa171e5d4\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:21.288119+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "dd9ce62c-5c67-42a3-87ae-1c7fa171e5d4"
+      },
+      {
+        "idx": 6,
+        "status": 200,
+        "latency_s": 21.077,
+        "body": "{\"job_id\":\"fbad6a2c-04c4-4373-823f-f05eb5e96892\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:35:22.303663+00:00\",\"user_id\":\"qa_stress_71752a\"}",
+        "job_id": "fbad6a2c-04c4-4373-823f-f05eb5e96892"
+      },
+      {
+        "idx": 1,
+        "status": 429,
+        "latency_s": 27.94,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}",
+        "job_id": null
+      }
+    ],
+    "stress_job_ids": [
+      "5071406d-8d26-400b-82a2-986d466c7183",
+      "c9a5e468-04a3-4eb1-9b4c-ad2fefeb690a",
+      "7483f9ec-a861-47e1-9d82-aecadc4a5973",
+      "596e4494-44f0-4bac-bc6c-0c7e5a6f4b4c",
+      "dd9ce62c-5c67-42a3-87ae-1c7fa171e5d4",
+      "fbad6a2c-04c4-4373-823f-f05eb5e96892"
+    ]
+  },
+  "stress": {
+    "submitted": 8,
+    "accepted": 6,
+    "rejected_429": 2,
+    "completed": 3,
+    "failed": 0,
+    "cancelled": 3,
+    "queue_wait_s": {
+      "min": 4.47,
+      "p50": 8.31,
+      "max": 15.28
+    },
+    "run_time_s": {
+      "min": 18.21,
+      "p50": 25.35,
+      "max": 46.25
+    },
+    "total_time_s": {
+      "min": 27.25,
+      "p50": 36.31,
+      "max": 50.72
+    }
+  },
+  "totals": {
+    "tests": 20,
+    "passed": 16,
+    "failed": 4
+  },
+  "finished_at": "2026-02-19T22:36:12.869755+00:00"
+}

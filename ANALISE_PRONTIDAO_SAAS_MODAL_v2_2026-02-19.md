@@ -3,6 +3,73 @@
 Data: 19/02/2026  
 Base de comparacao: codigo atual + `README.md` + exemplos oficiais Modal + docs Modal (Context7).
 
+## Atualizacao final (19/02/2026 23:09 UTC)
+Esta secao substitui qualquer ponto conflitante abaixo.
+
+### O que foi validado de forma real agora
+1. Benchmark real em producao (`cold`, `warm`, `concorrencia=3`, `cancelamento`):
+- arquivo: `tests_outputs/benchmark_latency_warm_cold_conc_cancel_20260219_200228.json`
+- `cold`: `queue_wait=44.94s`, `run=39.02s`, `total=83.96s`
+- `warm`: `queue_wait=4.82s`, `run=38.28s`, `total=43.11s`
+- `cancel`: job chegou em `running`, `DELETE` retornou `200`, estado final `cancelled`
+- provas de output: `tests_outputs/benchmark_cold_2b1bcb7a.png`, `tests_outputs/benchmark_warm_f02ae642.png`
+
+2. Burst de cota por usuario (`8` submits paralelos):
+- arquivo: `tests_outputs/quota_burst_check_20260219_200402.json`
+- resultado: `accepted=6`, `429=2`, `other=0`
+- leitura correta: limite atual controla **ativos simultaneos**, nao “maximo absoluto por janela curta”.
+
+3. Validacao final pos-hardening de auth:
+- output: `tests_outputs/post_auth_hardening_e7be18b3.png`
+- tempos: `queue_wait=42.52s`, `run_time=30.08s`, `total=72.6s`
+
+### Ajustes novos aplicados no codigo (prontos)
+1. API key em comparacao constante:
+- `comfyui_api.py`: `hmac.compare_digest(...)` em `verify_api_key`.
+
+2. Formato estrito de `X-User-ID`:
+- `comfyui_api.py`: regex `^[A-Za-z0-9._:@-]{1,128}$`.
+
+3. Proxy auth nativo Modal opcional:
+- `comfyui_api.py`: `@modal.asgi_app(requires_proxy_auth=API_REQUIRE_PROXY_AUTH)`.
+- habilitar com `API_REQUIRE_PROXY_AUTH=1`.
+
+4. README alinhado com producao real:
+- formato de `X-User-ID`, proxy auth opcional, knobs de custo/latencia e tempos cold/warm realistas.
+
+### Comparacao objetiva com os exemplos oficiais citados
+1. `06_gpu_and_ml/comfyui/comfyapp.py`
+- exemplo usa `@app.cls(..., scaledown_window=300, gpu=\"L40S\")` + health guard com `stop_fetching_inputs`.
+- seu codigo: mesma estrategia de health guard/remoção de container ruim e API headless por classe GPU.
+
+2. `06_gpu_and_ml/comfyui/memory_snapshot/memory_snapshot_example.py`
+- exemplo usa `enable_memory_snapshot=True` + `@modal.enter(snap=True)` e `@modal.enter(snap=False)` com `/cuda/set_device`.
+- seu codigo: alinhado exatamente nesse padrao.
+
+3. `06_gpu_and_ml/image-to-video/image_to_video.py`
+- exemplo usa volume para pesos e `scaledown_window` para balancear custo/latencia.
+- seu codigo: usa volume para modelos e agora defaults economicos (`min=0`, `buffer=0`) com override por env.
+
+4. `06_gpu_and_ml/gpu_fallbacks.py`
+- exemplo mostra fallback de GPU por lista.
+- seu codigo: usa lista configuravel por `GPU_CONFIG` (`l40s,a100,a10g`), sem `any` por previsibilidade.
+
+5. `03_scaling_out/cls_with_options.py`
+- exemplo reforca “perfil de recurso por contexto”.
+- no seu caso, isso foi materializado por knobs de env (sem adicionar complexidade estrutural).
+
+6. `07_web_endpoints/basic_web.py`
+- exemplo recomenda `requires_proxy_auth=True` para endpoints sensiveis.
+- seu codigo: agora suporta essa camada extra por env (`API_REQUIRE_PROXY_AUTH=1`).
+
+### Veredito de prontidao (honesto)
+- **Pronto para producao controlada via backend proprio**: **SIM**.
+- **Para 2k+ DAU com baixa surpresa de latencia**: **SIM, com tune de deploy**:
+  - em horario de pico: `GPU_MIN_CONTAINERS=1` e `GPU_BUFFER_CONTAINERS=1`
+  - fora de pico: `GPU_MIN_CONTAINERS=0`, `GPU_BUFFER_CONTAINERS=0`
+  - manter `MAX_ACTIVE_JOBS_PER_USER` + rate limit no gateway (Cloudflare/API Gateway)
+  - se endpoint exposto publicamente: `API_REQUIRE_PROXY_AUTH=1`
+
 ## Veredito rapido
 - **Pronto para producao controlada (2k+ DAU) via backend proprio**: **SIM, com pre-condicoes operacionais**.
 - **Pronto para abertura publica sem gateway/controles externos**: **NAO**.

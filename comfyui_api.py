@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import logging
 import ipaddress
+import re
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -59,11 +60,13 @@ R2_URL_TTL_SECONDS = int(os.environ.get("R2_URL_TTL_SECONDS", "86400"))
 MAX_EXTERNAL_MEDIA_BYTES = 50 * 1024 * 1024
 MAX_EXTERNAL_REDIRECTS = 3
 ACTIVE_SLOT_LOCK_TIMEOUT_SECONDS = float(os.environ.get("ACTIVE_SLOT_LOCK_TIMEOUT_SECONDS", "20"))
+API_REQUIRE_PROXY_AUTH = os.environ.get("API_REQUIRE_PROXY_AUTH", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 ACTIVE_SLOTS_DIR = Path(JOBS_DIR) / "_active_slots"
 ACTIVE_SLOTS_LOCK_FILE = Path(JOBS_DIR) / "_locks" / "active_slots.lock"
 CANCEL_MARKERS_DIR = Path(JOBS_DIR) / "_cancel_markers"
+USER_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 
 
 def _parse_gpu_config() -> str | list[str]:
@@ -860,7 +863,7 @@ security = HTTPBearer()
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate the Bearer token against API_KEY secret."""
     expected = os.environ.get("API_KEY", "")
-    if not expected or credentials.credentials != expected:
+    if not expected or not hmac.compare_digest(credentials.credentials, expected):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return credentials.credentials
 
@@ -870,8 +873,8 @@ def get_caller_user_id(request: Request) -> str:
     caller_user_id = request.headers.get("X-User-ID", "").strip()
     if not caller_user_id:
         raise HTTPException(400, "Missing required X-User-ID header")
-    if len(caller_user_id) > 128:
-        raise HTTPException(400, "X-User-ID too long (max 128 chars)")
+    if not USER_ID_RE.fullmatch(caller_user_id):
+        raise HTTPException(400, "Invalid X-User-ID format")
     return caller_user_id
 
 
@@ -1379,7 +1382,7 @@ def health():
     max_containers=API_MAX_CONTAINERS,
     scaledown_window=API_SCALEDOWN_WINDOW_SECONDS,
 )
-@modal.asgi_app()
+@modal.asgi_app(requires_proxy_auth=API_REQUIRE_PROXY_AUTH)
 def api():
     return web_app
 

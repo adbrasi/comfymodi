@@ -1,0 +1,83 @@
+{
+  "started_at": "2026-02-19T22:58:28.115714+00:00",
+  "api": "https://cezarsaint--comfyui-saas-api.modal.run",
+  "health": 200,
+  "cold": {
+    "name": "cold",
+    "job_id": "2b1bcb7a-7551-4a94-ae5e-7aa8c8460613",
+    "status": "completed",
+    "queue_wait_s": 44.94,
+    "run_time_s": 39.02,
+    "total_time_s": 83.96,
+    "outputs": 1
+  },
+  "warm": {
+    "name": "warm",
+    "job_id": "f02ae642-c329-4196-a697-504ea0699b96",
+    "status": "completed",
+    "queue_wait_s": 4.82,
+    "run_time_s": 38.28,
+    "total_time_s": 43.11,
+    "outputs": 1
+  },
+  "conc3_submit": [
+    {
+      "idx": 0,
+      "status": 200,
+      "latency_s": 9.54,
+      "job_id": "68a0a416-176f-4f98-92c1-9f848195fcdb"
+    },
+    {
+      "idx": 2,
+      "status": 200,
+      "latency_s": 14.59,
+      "job_id": "07c303ca-c0a8-43e8-84d9-50ffb151c571"
+    },
+    {
+      "idx": 1,
+      "status": 200,
+      "latency_s": 20.11,
+      "job_id": "83258e31-7aaf-4cc1-9d94-0fa8b0d76ec2"
+    }
+  ],
+  "conc3_jobs": [
+    {
+      "name": "conc3",
+      "job_id": "68a0a416-176f-4f98-92c1-9f848195fcdb",
+      "status": "completed",
+      "queue_wait_s": 8.88,
+      "run_time_s": 27.11,
+      "total_time_s": 35.99,
+      "outputs": 1
+    },
+    {
+      "name": "conc3",
+      "job_id": "07c303ca-c0a8-43e8-84d9-50ffb151c571",
+      "status": "completed",
+      "queue_wait_s": 30.8,
+      "run_time_s": 40.99,
+      "total_time_s": 71.79,
+      "outputs": 1
+    },
+    {
+      "name": "conc3",
+      "job_id": "83258e31-7aaf-4cc1-9d94-0fa8b0d76ec2",
+      "status": "completed",
+      "queue_wait_s": 33.83,
+      "run_time_s": 32.97,
+      "total_time_s": 66.79,
+      "outputs": 1
+    }
+  ],
+  "cancel": {
+    "job_id": "0269faf9-05d4-4c5c-9571-aa20b7566444",
+    "before_cancel": "running",
+    "cancel_http": 200,
+    "final_status": "cancelled"
+  },
+  "artifacts": {
+    "cold": "tests_outputs/benchmark_cold_2b1bcb7a.png",
+    "warm": "tests_outputs/benchmark_warm_f02ae642.png"
+  },
+  "finished_at": "2026-02-19T23:02:28.107770+00:00"
+}

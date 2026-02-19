@@ -259,6 +259,16 @@ Authorization: Bearer <API_KEY>
 X-User-ID: <tenant-or-user-id>
 ```
 
+Regras de formato para `X-User-ID`:
+- Até 128 caracteres
+- Apenas: `A-Z a-z 0-9 . _ : @ -`
+
+Camada extra opcional (recomendado em produção): habilite proxy auth nativo do Modal:
+```bash
+API_REQUIRE_PROXY_AUTH=1
+```
+Com isso, além do `Bearer`, o endpoint também exige `Modal-Key` + `Modal-Secret` (token de proxy auth do workspace).
+
 ### Endpoints
 
 #### `POST /v1/jobs` — Criar job
@@ -327,8 +337,8 @@ Para isolamento completo de dados em produção, considere instâncias dedicadas
 
 | Cenário | Tempo estimado |
 |---------|----------------|
-| Container warm (snapshot restaurado) | ~1-3 s até aceitar job |
-| Cold start com snapshot existente | ~8-10 s |
+| Container warm (snapshot restaurado) | ~3-8 s até iniciar execução |
+| Cold start com snapshot existente | ~30-90 s (depende de alocação GPU e fila) |
 | Primeira execução (criando snapshot) | ~3-5 min |
 | GPU indisponível (espera por alocação) | 0-6 min |
 
@@ -350,6 +360,9 @@ Para evitar cold start, adicione `min_containers=1` ao `@app.cls`:
 - `MAX_ACTIVE_JOBS_GLOBAL` limita jobs `queued|running` no sistema.
 - `MAX_ACTIVE_JOBS_PER_USER` limita jobs ativos por `X-User-ID`.
 - `GPU_BUFFER_CONTAINERS` mantém GPUs extras prontas durante pico para reduzir fila sem manter `min_containers` alto.
+- `GPU_MIN_CONTAINERS=0` reduz custo idle (mais cold start).
+- `GPU_MIN_CONTAINERS=1` reduz latência de cold start (maior custo fixo).
+- `API_REQUIRE_PROXY_AUTH=1` adiciona autenticação de borda do Modal para reduzir abuso de endpoint.
 
 ---
 

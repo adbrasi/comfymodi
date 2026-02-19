@@ -1,0 +1,267 @@
+{
+  "started_at": "2026-02-19T22:44:36.758072+00:00",
+  "finished_at": "2026-02-19T22:48:21.874969+00:00",
+  "api": "https://cezarsaint--comfyui-saas-api.modal.run",
+  "tests": [
+    {
+      "name": "health_200",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"status\":\"ok\",\"timestamp\":\"2026-02-19T22:44:39.335266+00:00\"}"
+      }
+    },
+    {
+      "name": "auth_invalid_key_rejected",
+      "ok": true,
+      "details": {
+        "status": 401,
+        "body": "{\"detail\":\"Invalid API key\"}"
+      }
+    },
+    {
+      "name": "missing_x_user_id_rejected",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "body": "{\"detail\":\"Missing required X-User-ID header\"}"
+      }
+    },
+    {
+      "name": "e2e_create_job",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"job_id\":\"b6bda0a9-2712-4cb3-89e1-df3828848e83\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:44:40.752883+00:00\",\"user_id\":\"e2e_390c0e\"}",
+        "job_id": "b6bda0a9-2712-4cb3-89e1-df3828848e83"
+      }
+    },
+    {
+      "name": "e2e_job_completed_with_output",
+      "ok": true,
+      "details": {
+        "status": "completed",
+        "outputs": 1,
+        "progress": 100
+      }
+    },
+    {
+      "name": "e2e_output_downloadable",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "bytes": 958549,
+        "file": "tests_outputs/fullcheck_e2e_commit_b6bda0a9_0.png"
+      }
+    },
+    {
+      "name": "cancel_immediate_create",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "job_id": "80adc642-c527-4bf8-94c2-09b4ca6ccd99",
+        "body": "{\"job_id\":\"80adc642-c527-4bf8-94c2-09b4ca6ccd99\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:44:58.003263+00:00\",\"user_id\":\"cancelq_e55171\"}"
+      }
+    },
+    {
+      "name": "cancel_immediate_endpoint",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"message\":\"Job cancellation requested\"}"
+      }
+    },
+    {
+      "name": "cancel_immediate_effective",
+      "ok": true,
+      "details": {
+        "status": "cancelled"
+      }
+    },
+    {
+      "name": "cancel_running_create",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "job_id": "7bf62a33-acf5-46c4-82c0-798ce39b5e6c",
+        "body": "{\"job_id\":\"7bf62a33-acf5-46c4-82c0-798ce39b5e6c\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:08.209168+00:00\",\"user_id\":\"cancelr_bbd106\"}"
+      }
+    },
+    {
+      "name": "cancel_running_seen_running",
+      "ok": true,
+      "details": {
+        "last_status": "running"
+      }
+    },
+    {
+      "name": "cancel_running_endpoint",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"message\":\"Job cancellation requested\"}"
+      }
+    },
+    {
+      "name": "cancel_running_effective",
+      "ok": true,
+      "details": {
+        "status": "cancelled"
+      }
+    },
+    {
+      "name": "concurrency3_submissions_ok",
+      "ok": true,
+      "details": {
+        "submissions": [
+          {
+            "idx": 1,
+            "status": 200,
+            "latency_s": 4.994,
+            "job_id": "fb1aa754-e7da-489e-b371-6a56648c0747",
+            "body": "{\"job_id\":\"fb1aa754-e7da-489e-b371-6a56648c0747\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:23.308953+00:00\",\"user_id\":\"conc3_731ee1\"}"
+          },
+          {
+            "idx": 0,
+            "status": 200,
+            "latency_s": 10.566,
+            "job_id": "94bbd88c-d27c-4c38-aa54-e30cbff02549",
+            "body": "{\"job_id\":\"94bbd88c-d27c-4c38-aa54-e30cbff02549\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:27.990021+00:00\",\"user_id\":\"conc3_731ee1\"}"
+          },
+          {
+            "idx": 2,
+            "status": 200,
+            "latency_s": 14.697,
+            "job_id": "804eba5f-f2f8-423a-8eb1-c0112351d8a2",
+            "body": "{\"job_id\":\"804eba5f-f2f8-423a-8eb1-c0112351d8a2\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:33.501815+00:00\",\"user_id\":\"conc3_731ee1\"}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "concurrency3_all_completed",
+      "ok": true,
+      "details": {
+        "completed": 3,
+        "failed": 0,
+        "cancelled": 0,
+        "other": 0
+      }
+    },
+    {
+      "name": "stress_burst_enforces_user_limit",
+      "ok": true,
+      "details": {
+        "accepted": 5,
+        "rejected_429": 3,
+        "other_errors": []
+      }
+    },
+    {
+      "name": "stress_jobs_terminal",
+      "ok": true,
+      "details": {
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 5,
+        "unknown": 0
+      }
+    }
+  ],
+  "artifacts": {
+    "e2e_image": "tests_outputs/fullcheck_e2e_commit_b6bda0a9_0.png",
+    "concurrency3_submissions": [
+      {
+        "idx": 1,
+        "status": 200,
+        "latency_s": 4.994,
+        "job_id": "fb1aa754-e7da-489e-b371-6a56648c0747",
+        "body": "{\"job_id\":\"fb1aa754-e7da-489e-b371-6a56648c0747\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:23.308953+00:00\",\"user_id\":\"conc3_731ee1\"}"
+      },
+      {
+        "idx": 0,
+        "status": 200,
+        "latency_s": 10.566,
+        "job_id": "94bbd88c-d27c-4c38-aa54-e30cbff02549",
+        "body": "{\"job_id\":\"94bbd88c-d27c-4c38-aa54-e30cbff02549\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:27.990021+00:00\",\"user_id\":\"conc3_731ee1\"}"
+      },
+      {
+        "idx": 2,
+        "status": 200,
+        "latency_s": 14.697,
+        "job_id": "804eba5f-f2f8-423a-8eb1-c0112351d8a2",
+        "body": "{\"job_id\":\"804eba5f-f2f8-423a-8eb1-c0112351d8a2\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:45:33.501815+00:00\",\"user_id\":\"conc3_731ee1\"}"
+      }
+    ],
+    "stress_submissions": [
+      {
+        "idx": 0,
+        "status": 200,
+        "latency_s": 12.624,
+        "body": "{\"job_id\":\"5c6fd507-efd1-4d93-af21-5fdaf2b6649a\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:46:49.909375+00:00\",\"user_id\":\"burst_07639c\"}",
+        "job_id": "5c6fd507-efd1-4d93-af21-5fdaf2b6649a"
+      },
+      {
+        "idx": 5,
+        "status": 200,
+        "latency_s": 17.778,
+        "body": "{\"job_id\":\"b24636ff-6463-4c63-ba4d-e745b6d3ab83\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:47:02.141899+00:00\",\"user_id\":\"burst_07639c\"}",
+        "job_id": "b24636ff-6463-4c63-ba4d-e745b6d3ab83"
+      },
+      {
+        "idx": 4,
+        "status": 200,
+        "latency_s": 31.46,
+        "body": "{\"job_id\":\"d74068eb-4996-4ad4-a943-462710a54fd0\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:47:07.293680+00:00\",\"user_id\":\"burst_07639c\"}",
+        "job_id": "d74068eb-4996-4ad4-a943-462710a54fd0"
+      },
+      {
+        "idx": 2,
+        "status": 200,
+        "latency_s": 37.036,
+        "body": "{\"job_id\":\"fa05a9fc-7220-432f-a4d1-15aa2663e741\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:47:20.976552+00:00\",\"user_id\":\"burst_07639c\"}",
+        "job_id": "fa05a9fc-7220-432f-a4d1-15aa2663e741"
+      },
+      {
+        "idx": 7,
+        "status": 200,
+        "latency_s": 42.418,
+        "body": "{\"job_id\":\"c5a0c463-22a7-4e75-aea9-68438b3491a5\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:47:26.696600+00:00\",\"user_id\":\"burst_07639c\"}",
+        "job_id": "c5a0c463-22a7-4e75-aea9-68438b3491a5"
+      },
+      {
+        "idx": 3,
+        "status": 429,
+        "latency_s": 44.487,
+        "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}",
+        "job_id": null
+      },
+      {
+        "idx": 6,
+        "status": 429,
+        "latency_s": 50.979,
+        "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}",
+        "job_id": null
+      },
+      {
+        "idx": 1,
+        "status": 429,
+        "latency_s": 54.593,
+        "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}",
+        "job_id": null
+      }
+    ],
+    "stress_job_ids": [
+      "5c6fd507-efd1-4d93-af21-5fdaf2b6649a",
+      "b24636ff-6463-4c63-ba4d-e745b6d3ab83",
+      "d74068eb-4996-4ad4-a943-462710a54fd0",
+      "fa05a9fc-7220-432f-a4d1-15aa2663e741",
+      "c5a0c463-22a7-4e75-aea9-68438b3491a5"
+    ]
+  },
+  "totals": {
+    "tests": 17,
+    "passed": 17,
+    "failed": 0
+  }
+}

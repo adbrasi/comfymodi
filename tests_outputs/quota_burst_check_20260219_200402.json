@@ -1,0 +1,57 @@
+{
+  "at": "2026-02-19T23:04:02.046000+00:00",
+  "submitted": 8,
+  "accepted": 6,
+  "rejected_429": 2,
+  "other": [],
+  "submissions": [
+    {
+      "idx": 0,
+      "status": 200,
+      "latency_s": 5.86,
+      "job_id": "259792f6-3472-40d3-add3-190308584f3e"
+    },
+    {
+      "idx": 1,
+      "status": 200,
+      "latency_s": 10.51,
+      "job_id": "eb60acde-7c07-4f1f-af04-b3bb068e4ade"
+    },
+    {
+      "idx": 2,
+      "status": 200,
+      "latency_s": 44.7,
+      "job_id": "78a6c84e-398d-4316-a9a8-3fd4c80497d2"
+    },
+    {
+      "idx": 3,
+      "status": 429,
+      "latency_s": 39.02,
+      "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}"
+    },
+    {
+      "idx": 4,
+      "status": 200,
+      "latency_s": 17.0,
+      "job_id": "a3ef06d1-f1f7-445c-ae59-e2c1a79656b5"
+    },
+    {
+      "idx": 5,
+      "status": 429,
+      "latency_s": 34.47,
+      "body": "{\"detail\":\"User active job limit reached. Wait for running jobs to finish.\"}"
+    },
+    {
+      "idx": 6,
+      "status": 200,
+      "latency_s": 30.71,
+      "job_id": "0c6cef75-53ab-439f-b24b-046a71f3872b"
+    },
+    {
+      "idx": 7,
+      "status": 200,
+      "latency_s": 22.59,
+      "job_id": "db08707f-ba77-488f-b7b7-2ec80fd99adf"
+    }
+  ]
+}
