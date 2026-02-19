@@ -46,11 +46,11 @@ JOBS_DIR = "/jobs"
 COMFY_DIR = "/root/comfy/ComfyUI"
 
 # Runtime/scaling knobs (override via env vars at deploy time)
-GPU_MAX_CONTAINERS = int(os.environ.get("GPU_MAX_CONTAINERS", "20"))
-GPU_MIN_CONTAINERS = int(os.environ.get("GPU_MIN_CONTAINERS", "1"))
-GPU_BUFFER_CONTAINERS = int(os.environ.get("GPU_BUFFER_CONTAINERS", "1"))
-GPU_SCALEDOWN_WINDOW_SECONDS = int(os.environ.get("GPU_SCALEDOWN_WINDOW_SECONDS", "300"))
-API_MAX_CONTAINERS = int(os.environ.get("API_MAX_CONTAINERS", "10"))
+GPU_MAX_CONTAINERS = int(os.environ.get("GPU_MAX_CONTAINERS", "2"))
+GPU_MIN_CONTAINERS = int(os.environ.get("GPU_MIN_CONTAINERS", "0"))
+GPU_BUFFER_CONTAINERS = int(os.environ.get("GPU_BUFFER_CONTAINERS", "0"))
+GPU_SCALEDOWN_WINDOW_SECONDS = int(os.environ.get("GPU_SCALEDOWN_WINDOW_SECONDS", "60"))
+API_MAX_CONTAINERS = int(os.environ.get("API_MAX_CONTAINERS", "1"))
 API_SCALEDOWN_WINDOW_SECONDS = int(os.environ.get("API_SCALEDOWN_WINDOW_SECONDS", "60"))
 MAX_ACTIVE_JOBS_GLOBAL = int(os.environ.get("MAX_ACTIVE_JOBS_GLOBAL", "200"))
 MAX_ACTIVE_JOBS_PER_USER = int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "5"))
@@ -1169,6 +1169,7 @@ def _reserve_active_slot(job_id: str, caller_user_id: str):
     jobs_vol.reload()
     try:
         with _active_slot_lock():
+            jobs_vol.reload()
             _reconcile_active_slots_locked()
             ACTIVE_SLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
