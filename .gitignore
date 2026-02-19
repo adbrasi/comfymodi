@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables (secrets)
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Outputs and artifacts
+outputs/
+*.mp4
+*.avi
+*.mov
+*.webm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Modal
+.modal/
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+temp/
