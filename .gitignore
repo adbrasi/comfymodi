@@ -39,6 +39,12 @@ Thumbs.db
 # Logs
 *.log
 
+# Test outputs
+test_outputs/
+
+# Pytest
+.pytest_cache/
+
 # Temporary
 tmp/
 temp/

@@ -169,6 +169,13 @@ gpu_image = (
     .run_commands(
         "comfy --skip-prompt install --skip-manager --fast-deps --nvidia",
     )
+    # Copy the memory_snapshot_helper custom node (patches ComfyUI for safe snapshotting)
+    # Source: https://github.com/modal-labs/modal-examples/tree/main/06_gpu_and_ml/comfyui/memory_snapshot
+    .add_local_dir(
+        local_path=Path(__file__).parent / "memory_snapshot_helper",
+        remote_path=f"{COMFY_DIR}/custom_nodes/memory_snapshot_helper",
+        copy=True,
+    )
     .run_function(install_custom_nodes)
     .run_commands(
         # Symlink models and outputs to the cache volume mount point
@@ -238,9 +245,20 @@ class JobStatusResponse(BaseModel):
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # Progress (0-100)
     progress: int = 0
+    # Sampler step progress (e.g., diffusion step 15/30)
+    current_step: int = 0
+    total_steps: int = 0
+    # Node-level progress
+    current_node: Optional[str] = None
+    nodes_done: int = 0
+    nodes_total: int = 0
+    # Results
     outputs: List[Dict] = Field(default_factory=list)
     error: Optional[str] = None
+    # Execution log (timestamps + events for debugging)
+    logs: List[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -296,87 +314,76 @@ def generate_r2_url(key: str, expires_in: int = 3600) -> str:
     volumes={CACHE_DIR: cache_vol, JOBS_DIR: jobs_vol},
     secrets=[r2_secret],
     enable_memory_snapshot=True,
-    scaledown_window=120,
+    scaledown_window=300,  # keep warm 5 min after last job
     max_containers=10,
     timeout=600,
 )
 @modal.concurrent(max_inputs=1)
 class ComfyService:
-    """Manages a ComfyUI server and processes workflow jobs."""
+    """Manages a ComfyUI server and processes workflow jobs.
+
+    Memory snapshot strategy (from official Modal ComfyUI example):
+    - snap=True:  launch ComfyUI in background (CPU only, no CUDA) → snapshot saved
+    - snap=False: restore CUDA device via /cuda/set_device → ready in seconds
+    """
 
     @modal.enter(snap=True)
-    def snapshot_phase(self):
-        """Pre-load CPU libraries before snapshot (no GPU available)."""
-        import numpy  # noqa: F401
-        import PIL  # noqa: F401
-
-        self.server_process = None
-        self._healthy = True
-        print("[snapshot] Environment ready for snapshot")
+    def launch_for_snapshot(self):
+        """Launch ComfyUI server during snapshot phase (no GPU).
+        The memory_snapshot_helper custom node patches ComfyUI to avoid CUDA init here.
+        """
+        print("[snapshot] Launching ComfyUI for snapshotting ...")
+        cmd = f"comfy launch --background -- --port {COMFY_PORT}"
+        subprocess.run(cmd, shell=True, check=True)
+        print("[snapshot] ComfyUI launched, snapshot will be captured")
 
     @modal.enter(snap=False)
-    def gpu_phase(self):
-        """Start ComfyUI server when GPU becomes available."""
+    def restore_cuda(self):
+        """After snapshot restore, re-enable the CUDA device for inference."""
         import requests as req
 
-        print("[gpu] Starting ComfyUI server ...")
-
-        self.server_process = subprocess.Popen(
-            [
-                "python",
-                f"{COMFY_DIR}/main.py",
-                "--listen", "0.0.0.0",
-                "--port", str(COMFY_PORT),
-                "--disable-auto-launch",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        # Wait for server to become ready
-        deadline = time.time() + 120
-        delay = 1.0
-        while time.time() < deadline:
-            if self.server_process.poll() is not None:
-                raise RuntimeError("ComfyUI process exited during startup")
-            try:
-                r = req.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=3)
-                if r.status_code == 200:
-                    print("[gpu] ComfyUI server ready!")
-                    return
-            except Exception:
-                pass
-            time.sleep(delay)
-            delay = min(delay * 1.5, 5.0)
-
-        raise TimeoutError("ComfyUI did not start within 120s")
+        print("[restore] Re-enabling CUDA device ...")
+        try:
+            r = req.post(f"http://127.0.0.1:{COMFY_PORT}/cuda/set_device", timeout=10)
+            if r.status_code == 200:
+                print("[restore] CUDA device ready!")
+            else:
+                print(f"[restore] Warning: /cuda/set_device returned {r.status_code}")
+        except Exception as e:
+            print(f"[restore] Warning: could not set CUDA device: {e}")
 
     def _check_health(self):
-        """Check if ComfyUI is responsive; stop accepting work if not."""
+        """Check if ComfyUI is responsive; remove this container from pool if not."""
         import requests as req
 
         try:
             r = req.get(f"http://127.0.0.1:{COMFY_PORT}/system_stats", timeout=5)
             r.raise_for_status()
         except Exception as e:
-            print(f"[health] ComfyUI unhealthy: {e}")
-            self._healthy = False
+            print(f"[health] ComfyUI unhealthy: {e} — stopping container")
             modal.experimental.stop_fetching_inputs()
-            raise RuntimeError("ComfyUI server is not healthy, stopping container")
+            raise RuntimeError("ComfyUI not healthy, container removed from pool")
 
     @modal.method()
     def run_job(self, job_id: str):
-        """Execute a queued job end-to-end."""
+        """Execute a queued job end-to-end with detailed progress tracking."""
         import requests as req
         import websocket
         import shutil
+
+        short_id = job_id[:8]
+
+        def log(msg: str):
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            line = f"[{ts}] {msg}"
+            print(f"[job:{short_id}] {line}")
+            job_data.setdefault("logs", []).append(line)
 
         self._check_health()
 
         job_file = Path(JOBS_DIR) / f"{job_id}.json"
         input_dir = Path(f"{COMFY_DIR}/input") / job_id
+        job_data: dict = {}
 
         try:
             # 1. Load job data
@@ -384,17 +391,27 @@ class ComfyService:
             if not job_file.exists():
                 raise FileNotFoundError(f"Job {job_id} not found")
             job_data = json.loads(job_file.read_text())
+            job_data["logs"] = []
 
             # 2. Mark as running
-            job_data["status"] = "running"
-            job_data["started_at"] = datetime.now(timezone.utc).isoformat()
+            job_data.update({
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "progress": 0,
+                "current_node": None,
+                "current_step": 0,
+                "total_steps": 0,
+                "nodes_done": 0,
+                "nodes_total": 0,
+            })
             self._save_job(job_file, job_data)
+            log("Job started")
 
             workflow = json.loads(json.dumps(job_data["workflow"]))
 
             # 3. Prepare media files
             input_dir.mkdir(parents=True, exist_ok=True)
-            media_remap = {}
+            media_remap: dict = {}
 
             for item in job_data.get("media", []):
                 name = item.get("name", f"media_{uuid.uuid4().hex[:8]}")
@@ -403,14 +420,15 @@ class ComfyService:
 
                 if item.get("data"):
                     dest.write_bytes(base64.b64decode(item["data"]))
+                    log(f"Media loaded from base64: {safe_name}")
                 elif item.get("url"):
                     r = req.get(item["url"], timeout=30)
                     r.raise_for_status()
                     dest.write_bytes(r.content)
+                    log(f"Media downloaded: {safe_name} ({len(r.content)//1024}KB)")
 
                 media_remap[safe_name] = str(Path(job_id) / safe_name)
 
-            # Remap media references in workflow
             if media_remap:
                 workflow = self._remap(workflow, media_remap)
 
@@ -421,6 +439,7 @@ class ComfyService:
                     continue
                 workflow.setdefault(node_id, {}).setdefault("inputs", {})
                 workflow[node_id]["inputs"][inp["field"]] = inp["value"]
+                log(f"Override node={node_id} field={inp['field']}")
 
             # 5. Submit to ComfyUI via WebSocket
             client_id = uuid.uuid4().hex
@@ -432,47 +451,76 @@ class ComfyService:
 
             resp = req.post(
                 f"http://127.0.0.1:{COMFY_PORT}/prompt",
-                json={
-                    "prompt": workflow,
-                    "client_id": client_id,
-                },
+                json={"prompt": workflow, "client_id": client_id},
                 timeout=30,
             )
             resp.raise_for_status()
             prompt_id = resp.json()["prompt_id"]
-            print(f"[job:{job_id[:8]}] Prompt submitted: {prompt_id}")
+            log(f"Prompt submitted: {prompt_id}")
 
-            # 6. Wait for completion via WebSocket
-            total_nodes = len(workflow)
-            done_nodes = set()
+            # 6. Track progress via WebSocket events
+            #
+            # Progress formula:
+            #   80% = node execution (each completed node = 80/total%)
+            #   +up to 80/total% = sampler steps within current node
+            #   20% = output collection/upload phase
+            #
+            node_order: list = []          # execution order from ComfyUI
+            done_nodes: set = set()        # completed node IDs
+            cached_nodes: set = set()
+            current_node_id: str = ""
+            current_step: int = 0
+            total_steps: int = 0
+            last_commit = time.time()
+
+            def calc_progress() -> int:
+                n = max(len(node_order) or len(workflow), 1)
+                node_pct = len(done_nodes) / n * 80.0
+                step_pct = 0.0
+                if total_steps > 0 and current_node_id and current_node_id not in done_nodes:
+                    step_pct = (current_step / total_steps) * (1 / n) * 80.0
+                return max(0, min(99, int(node_pct + step_pct)))
+
+            def flush(force: bool = False):
+                nonlocal last_commit
+                job_data["progress"] = calc_progress()
+                job_data["current_node"] = current_node_id or None
+                job_data["current_step"] = current_step
+                job_data["total_steps"] = total_steps
+                job_data["nodes_done"] = len(done_nodes)
+                job_data["nodes_total"] = len(node_order) or len(workflow)
+                now = time.time()
+                should_commit = force or (now - last_commit >= 3)
+                self._save_job(job_file, job_data, commit=should_commit)
+                if should_commit:
+                    last_commit = now
 
             while True:
                 try:
                     raw = ws.recv()
                 except websocket.WebSocketTimeoutException:
-                    # Poll history as fallback
+                    # Fallback: poll history to detect completion
                     try:
                         hr = req.get(
                             f"http://127.0.0.1:{COMFY_PORT}/history/{prompt_id}",
                             timeout=5,
                         )
                         hist = hr.json().get(prompt_id, {})
-                        status_obj = hist.get("status", {})
-                        status_str = (
-                            status_obj.get("status", "")
-                            if isinstance(status_obj, dict)
-                            else str(status_obj)
-                        ).lower()
-                        if status_str in ("success", "completed"):
+                        s = hist.get("status", {})
+                        s_str = (s.get("status", "") if isinstance(s, dict) else str(s)).lower()
+                        if s_str in ("success", "completed"):
+                            log("Detected completion via history poll")
                             break
-                        if status_str in ("error", "failed"):
-                            raise RuntimeError(f"ComfyUI execution failed: {status_obj}")
+                        if s_str in ("error", "failed"):
+                            raise RuntimeError(f"ComfyUI reported failure: {s}")
                     except RuntimeError:
                         raise
                     except Exception:
                         pass
+                    flush()
                     continue
 
+                # Skip binary preview frames
                 if isinstance(raw, bytes):
                     continue
 
@@ -484,33 +532,61 @@ class ComfyService:
                 msg_type = msg.get("type")
                 data = msg.get("data", {})
 
-                if data.get("prompt_id") != prompt_id:
+                # Only handle events for our prompt
+                if data.get("prompt_id") and data["prompt_id"] != prompt_id:
                     continue
 
-                if msg_type == "executing":
+                if msg_type == "execution_start":
+                    # ComfyUI sends the planned execution order
+                    nodes = data.get("nodes") or []
+                    node_order = [str(n) for n in nodes if n is not None]
+                    job_data["nodes_total"] = len(node_order)
+                    log(f"Execution started — {len(node_order)} nodes planned")
+                    flush(force=True)
+
+                elif msg_type == "executing":
                     node = data.get("node")
                     if node is None:
-                        print(f"[job:{job_id[:8]}] Execution complete")
+                        log("All nodes executed — workflow complete")
                         break
-                    done_nodes.add(str(node))
+                    current_node_id = str(node)
+                    current_step = 0
+                    total_steps = 0
+                    node_type = workflow.get(current_node_id, {}).get("class_type", "?")
+                    log(f"Executing node {current_node_id} ({node_type})")
+                    flush(force=True)
 
-                elif msg_type == "execution_error":
-                    raise RuntimeError(f"Execution error: {data}")
-
-                elif msg_type in ("executed", "execution_cached"):
+                elif msg_type == "executed":
                     node = data.get("node")
                     if node:
                         done_nodes.add(str(node))
+                        log(f"Node {node} completed ({len(done_nodes)}/{len(node_order) or len(workflow)})")
+                    flush(force=True)
 
-                # Update progress
-                progress = int(len(done_nodes) / max(total_nodes, 1) * 100)
-                if progress != job_data.get("progress", 0):
-                    job_data["progress"] = min(progress, 99)
-                    self._save_job(job_file, job_data, commit=False)
+                elif msg_type == "execution_cached":
+                    node = data.get("node")
+                    if node:
+                        cached_nodes.add(str(node))
+                        done_nodes.add(str(node))
+                        log(f"Node {node} cached (skipped)")
+                    flush()
+
+                elif msg_type == "progress":
+                    # Sampler step progress (e.g., diffusion steps 1..30)
+                    current_step = int(data.get("value", 0))
+                    total_steps = int(data.get("max", 0))
+                    flush()
+
+                elif msg_type == "execution_error":
+                    err = data.get("exception_message", str(data))
+                    log(f"Execution error: {err}")
+                    raise RuntimeError(f"ComfyUI execution error: {err}")
 
             ws.close()
+            log("WebSocket closed")
 
             # 7. Collect outputs and upload to R2
+            log("Collecting outputs ...")
             outputs = []
             hr = req.get(
                 f"http://127.0.0.1:{COMFY_PORT}/history/{prompt_id}",
@@ -521,10 +597,11 @@ class ComfyService:
             for node_id, node_out in history.get("outputs", {}).items():
                 for media_type in ("images", "videos", "gifs", "audio"):
                     for file_info in node_out.get(media_type, []):
+                        fname = file_info["filename"]
                         fr = req.get(
                             f"http://127.0.0.1:{COMFY_PORT}/view",
                             params={
-                                "filename": file_info["filename"],
+                                "filename": fname,
                                 "subfolder": file_info.get("subfolder", ""),
                                 "type": file_info.get("type", "output"),
                             },
@@ -534,56 +611,59 @@ class ComfyService:
                         payload = b"".join(fr.iter_content(1 << 20))
                         fr.close()
 
-                        # Upload to R2
-                        ext = Path(file_info["filename"]).suffix.lower()
-                        content_type = self._content_type(ext)
-                        r2_key = f"outputs/{job_id}/{file_info['filename']}"
+                        ext = Path(fname).suffix.lower()
+                        r2_key = f"outputs/{job_id}/{fname}"
 
                         try:
-                            upload_to_r2(payload, r2_key, content_type)
+                            upload_to_r2(payload, r2_key, self._content_type(ext))
                             url = generate_r2_url(r2_key, expires_in=86400)
                             outputs.append({
-                                "filename": file_info["filename"],
+                                "filename": fname,
                                 "type": media_type.rstrip("s"),
                                 "size_bytes": len(payload),
                                 "url": url,
                                 "r2_key": r2_key,
                             })
+                            log(f"Uploaded {fname} to R2 ({len(payload)//1024}KB)")
                         except Exception as e:
-                            print(f"[job:{job_id[:8]}] R2 upload failed, falling back to base64: {e}")
+                            log(f"R2 upload failed for {fname}: {e} — using base64 fallback")
                             outputs.append({
-                                "filename": file_info["filename"],
+                                "filename": fname,
                                 "type": media_type.rstrip("s"),
                                 "size_bytes": len(payload),
                                 "data": base64.b64encode(payload).decode(),
                             })
 
-                # Text outputs
                 for text_item in node_out.get("text", []):
-                    outputs.append({
-                        "node_id": node_id,
-                        "type": "text",
-                        "data": text_item,
-                    })
+                    outputs.append({"node_id": node_id, "type": "text", "data": text_item})
 
             # 8. Mark completed
-            job_data["status"] = "completed"
-            job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
-            job_data["progress"] = 100
-            job_data["outputs"] = outputs
+            elapsed = (
+                datetime.now(timezone.utc)
+                - datetime.fromisoformat(job_data["started_at"])
+            ).total_seconds()
+            log(f"Completed! {len(outputs)} output(s) | elapsed: {elapsed:.1f}s")
+
+            job_data.update({
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "progress": 100,
+                "current_node": None,
+                "nodes_done": len(done_nodes),
+                "outputs": outputs,
+            })
             self._save_job(job_file, job_data)
 
-            # 9. Send webhook if configured
             if job_data.get("webhook_url"):
                 self._send_webhook(job_data["webhook_url"], job_id, "job.completed")
 
-            print(f"[job:{job_id[:8]}] Completed with {len(outputs)} output(s)")
-
         except Exception as e:
-            print(f"[job:{job_id[:8]}] Failed: {e}")
-            job_data["status"] = "failed"
-            job_data["error"] = str(e)
-            job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+            log(f"FAILED: {e}")
+            job_data.update({
+                "status": "failed",
+                "error": str(e),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
             self._save_job(job_file, job_data)
 
             if job_data.get("webhook_url"):
@@ -698,6 +778,25 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
     return JobCreateResponse(job_id=job_id, status=JobStatus.QUEUED, created_at=now)
 
 
+QUEUED_TIMEOUT_SECONDS = 300  # 5 min — if still queued, mark failed
+
+
+def _check_queued_timeout(data: dict) -> dict:
+    """If a job has been queued too long (GPU unavailable), auto-fail it."""
+    if data.get("status") != "queued":
+        return data
+    created = datetime.fromisoformat(data["created_at"])
+    elapsed = (datetime.now(timezone.utc) - created).total_seconds()
+    if elapsed > QUEUED_TIMEOUT_SECONDS:
+        data["status"] = "failed"
+        data["error"] = f"Job timed out after {elapsed:.0f}s in queue (GPU unavailable)"
+        data["completed_at"] = datetime.now(timezone.utc).isoformat()
+        job_file = Path(JOBS_DIR) / f"{data['job_id']}.json"
+        job_file.write_text(json.dumps(data))
+        jobs_vol.commit()
+    return data
+
+
 @web_app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
     """Get job status and outputs."""
@@ -707,7 +806,7 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
 
-    data = json.loads(job_file.read_text())
+    data = _check_queued_timeout(json.loads(job_file.read_text()))
     return JobStatusResponse(
         job_id=data["job_id"],
         status=data["status"],
@@ -715,8 +814,14 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
         started_at=data.get("started_at"),
         completed_at=data.get("completed_at"),
         progress=data.get("progress", 0),
+        current_step=data.get("current_step", 0),
+        total_steps=data.get("total_steps", 0),
+        current_node=data.get("current_node"),
+        nodes_done=data.get("nodes_done", 0),
+        nodes_total=data.get("nodes_total", 0),
         outputs=data.get("outputs", []),
         error=data.get("error"),
+        logs=data.get("logs", []),
     )
 
 
@@ -736,7 +841,7 @@ async def list_jobs(
         files = sorted(jobs_path.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
         for jf in files[:limit]:
             try:
-                d = json.loads(jf.read_text())
+                d = _check_queued_timeout(json.loads(jf.read_text()))
                 if status and d["status"] != status:
                     continue
                 results.append({
