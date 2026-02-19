@@ -23,7 +23,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from pydantic import BaseModel, Field
 
-APP_NAME = "comfyui-saas-api"
+APP_NAME = "comfyui-saas-api2FULL"
 app = modal.App(APP_NAME)
 
 # CRITICAL: Single cache volume mounted at EMPTY path
@@ -117,7 +117,7 @@ def download_assets_and_setup():
     for subdir in ["models/clip_vision", "models/diffusion_models",
                    "models/text_encoders", "models/vae", "models/checkpoints",
                    "models/loras", "models/controlnet", "models/upscale_models",
-                   "models/vae_approx", "outputs", "temp"]:
+                   "models/vae_approx", "models/LLM", "outputs", "temp"]:
         Path(f"{CACHE_DIR}/{subdir}").mkdir(parents=True, exist_ok=True)
     
     # Download models using HF Transfer
@@ -168,9 +168,12 @@ def download_assets_and_setup():
          "umt5-xxl-enc-bf16.safetensors",
          f"{CACHE_DIR}/models/text_encoders"),
 
-        # Additional clip vision
+        # Additional clip vision models
         ("Kijai/WanVideo_comfy",
          "open-clip-xlm-roberta-large-vit-huge-14_visual_fp32.safetensors",
+         f"{CACHE_DIR}/models/clip_vision"),
+        ("Kijai/WanVideo_comfy",
+         "open-clip-xlm-roberta-large-vit-huge-14_visual_fp16.safetensors",
          f"{CACHE_DIR}/models/clip_vision"),
 
         # VAE Approx and Upscaler
@@ -202,11 +205,49 @@ def download_assets_and_setup():
             print(f"⚠️ Failed to download {filename}: {e}")
             continue
 
+    # Download Florence-2 models
+    print("📥 Downloading Florence-2 models...")
+    florence_models = [
+        ("MiaoshouAI/Florence-2-large-PromptGen-v2.0", f"{CACHE_DIR}/models/LLM/Florence-2-large-PromptGen-v2.0"),
+    ]
+    
+    for repo_id, local_dir in florence_models:
+        try:
+            target_path = Path(local_dir)
+            # Check if model already exists by checking for config.json
+            config_path = target_path / "config.json"
+            if config_path.exists():
+                print(f"✅ {repo_id} already exists, skipping...")
+                continue
+            
+            print(f"📥 Downloading complete model: {repo_id}...")
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,
+                resume_download=True
+            )
+            print(f"✅ Downloaded {repo_id}")
+        except Exception as e:
+            print(f"⚠️ Failed to download {repo_id}: {e}")
+            continue
+
     # Download Mega LoRAs
     print("📥 Downloading LoRAs from Mega...")
     mega_loras = [
         "https://mega.nz/file/xJ4w3DiT#E5h8kIwr-PQuxG4EeHXRw4uL1VFEbLxjYCMofsdfxNI",
         "https://mega.nz/file/8NhkGTAA#Ww8jci3_uL9c7YzKJNw2MqX5vBUDc3ANJzUiaOGvHkk",
+        "https://mega.nz/file/wNIgmRwb#vn6rKM3QuTDpWVTLEBDsKjIkNkaX2wLKeauKNeVkcFs",
+        "https://mega.nz/file/hZhhhCQS#4je0Im2g1kEvTCuPotjVWkA-g6XICkqMb-mKxMt6R3Y",
+        "https://mega.nz/file/UIAESACY#Qlei1Pj5Nwno3Sz-wsTekvD-YgCkN1A5QbFKoRHXG9E",
+        "https://mega.nz/file/cdAg1Q7D#tQVrer2sB-M7XdYiKAqr7kRRfJw4pXCdliOg2aPJUGE",
+        "https://mega.nz/file/5RQFiAAJ#QCWrHkuJjXlFufR18g5R9YXJGqJ1pQp7xbqNRgSYUjc",
+        "https://mega.nz/file/tABgxLTS#NNlPV8NPc7R52MIjABMFUb41EOFDxFoszBxOrPMN13Q",
+        "https://mega.nz/file/4MxBgJ5Y#R8OSby0u-t-QFBnpnOtdjN3xuiVRvHa4_OEzTwWoGKQ",
+        "https://mega.nz/file/lQRB1ZhT#IBoYK1DJCILHl4ILEgIYUZBVmC2pii-PqtLH38bwJqY",
+        "https://mega.nz/file/8ZQgjZQR#EZav6GgFTX7amc41PGHAM3FOKaTOlfjrvLWs8XpdPNY",
+        "https://mega.nz/file/5QRxDDII#MVIEGduGgTDS0DkanTiPQso0O4Im-Ph5QR0JGPbox0M",
     ]
 
     for mega_url in mega_loras:
@@ -268,12 +309,15 @@ def install_custom_nodes():
         "https://github.com/kijai/ComfyUI-Florence2",
         "https://github.com/kijai/ComfyUI-WanVideoWrapper",
         "https://github.com/kijai/ComfyUI-GIMM-VFI",
+        "https://github.com/pythongosssss/ComfyUI-WD14-Tagger",
+        "https://github.com/justUmen/Bjornulf_custom_nodes",
+        "https://github.com/yuvraj108c/ComfyUI-Upscaler-Tensorrt",
         "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite",
         "https://github.com/Fannovel16/comfyui_controlnet_aux",
         "https://github.com/Artificial-Sweetener/comfyui-WhiteRabbit",
         "https://github.com/shiimizu/ComfyUI_smZNodes",
         "https://github.com/CoreyCorza/ComfyUI-CRZnodes",
-        "https://github.com/yuvraj108c/ComfyUI-Dwpose-Tensorrt",
+        "https://github.com/adbrasi/groqrouter",
         "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes",
         "https://github.com/grmchn/ComfyUI-ProportionChanger",
     ]
