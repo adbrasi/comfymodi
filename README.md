@@ -23,7 +23,7 @@ CLAUDE.md               — instruções para o agente de desenvolvimento
 ```
 Cliente (seu SaaS backend)
         │
-        │  POST /v1/jobs  { workflow, inputs, user_id }
+        │  POST /v1/jobs  { workflow, inputs, user_id } + header X-User-ID
         ▼
   API Function (CPU, leve, sempre ativa)
         │  salva job no Volume + spawna worker
@@ -198,6 +198,7 @@ Seu **backend SaaS** monta o workflow e os inputs antes de chamar a API. O clien
 ```json
 POST /v1/jobs
 Authorization: Bearer <sua-api-key>
+X-User-ID: user_abc123
 
 {
   "workflow": { ...workflow_json_completo... },
@@ -255,6 +256,7 @@ print(job["job_id"])  # poll com GET /v1/jobs/{job_id}
 Todas as rotas (exceto `/health`) exigem:
 ```
 Authorization: Bearer <API_KEY>
+X-User-ID: <tenant-or-user-id>
 ```
 
 ### Endpoints
@@ -267,7 +269,7 @@ Authorization: Bearer <API_KEY>
   "inputs":      [ ... ],           // overrides de campos (opcional)
   "media":       [ ... ],           // arquivos de entrada (imagens, vídeos)
   "webhook_url": "https://...",     // callback ao completar (opcional)
-  "user_id":     "string"           // ID do usuário para rastreamento (opcional)
+  "user_id":     "string"           // ID do usuário (obrigatório; deve bater com X-User-ID)
 }
 ```
 
@@ -295,11 +297,12 @@ Retorna: `{ "job_id": "uuid", "status": "queued", "created_at": "...", "user_id"
 
 Query params: `?status=completed&user_id=user_123&limit=50`
 
-Use `user_id` para filtrar apenas os jobs de um usuário específico.
+Retorna apenas jobs do `X-User-ID` chamador. Se `user_id` for enviado, deve ser igual ao header.
 
 #### `DELETE /v1/jobs/{job_id}` — Cancelar job
 
-Define status como `cancelled`. O worker GPU detecta dentro de ~15 segundos e para a execução.
+Solicita cancelamento com `FunctionCall.cancel()` no Modal e marca o job como `cancelled`.
+O worker também faz parada cooperativa ao detectar o status no volume.
 
 #### `GET /health` — Health check (sem auth)
 
@@ -309,11 +312,12 @@ Define status como `cancelled`. O worker GPU detecta dentro de ~15 segundos e pa
 
 A API usa **uma única chave compartilhada** entre seu backend e o Modal. Seu SaaS backend é responsável por autenticar seus usuários antes de chamar a API.
 
-Para rastrear jobs por usuário:
+Para isolamento por tenant:
 
-1. Passe `user_id` ao criar o job (pode ser o ID interno do seu banco)
-2. Use `GET /v1/jobs?user_id=<id>` para listar apenas os jobs desse usuário
-3. O `user_id` é devolvido em todas as respostas de status
+1. Sempre envie `X-User-ID` no header
+2. Envie `user_id` no payload com o mesmo valor do header
+3. `GET /v1/jobs/{id}` e `DELETE /v1/jobs/{id}` validam ownership
+4. `GET /v1/jobs` retorna apenas jobs do caller
 
 Para isolamento completo de dados em produção, considere instâncias dedicadas por cliente enterprise (deploy com `APP_NAME` diferente e chave separada).
 
@@ -328,7 +332,7 @@ Para isolamento completo de dados em produção, considere instâncias dedicadas
 | Primeira execução (criando snapshot) | ~3-5 min |
 | GPU indisponível (espera por alocação) | 0-6 min |
 
-Jobs que ficam em `queued` por mais de **2 minutos** são automaticamente marcados como `failed` (`"GPU unavailable"`). Faça retry no seu backend.
+Jobs que ficam em `queued` por mais de **240s** (configurável via `QUEUED_TIMEOUT_SECONDS`) são marcados como `failed` por uma tarefa agendada (`fail_stale_queued_jobs`). Faça retry no seu backend.
 
 ### Manter container quente (opcional)
 
@@ -340,6 +344,12 @@ Para evitar cold start, adicione `min_containers=1` ao `@app.cls`:
     min_containers=1,   # sempre mantém 1 GPU ativa (~$1.95/h no idle com L40S)
 )
 ```
+
+### Controle de custo e burst
+
+- `MAX_ACTIVE_JOBS_GLOBAL` limita jobs `queued|running` no sistema.
+- `MAX_ACTIVE_JOBS_PER_USER` limita jobs ativos por `X-User-ID`.
+- `GPU_BUFFER_CONTAINERS` mantém GPUs extras prontas durante pico para reduzir fila sem manter `min_containers` alto.
 
 ---
 
@@ -362,8 +372,8 @@ Os logs de execução também são retornados no campo `logs` de cada job.
 
 ## Troubleshooting
 
-**Job fica em `queued` e falha após 2 min**
-→ GPU L40S indisponível no momento. Tente novamente em alguns minutos.
+**Job fica em `queued` e falha por timeout**
+→ A tarefa agendada `fail_stale_queued_jobs` marcou o job como expirado (`QUEUED_TIMEOUT_SECONDS`). Em picos, aumente esse valor.
 
 **`ModuleNotFoundError` ao fazer deploy**
 → Adicione o pacote ao `.pip_install()` do `gpu_image` no arquivo.
@@ -372,7 +382,7 @@ Os logs de execução também são retornados no campo `logs` de cada job.
 → Verifique o workflow com o ComfyUI local primeiro.
 
 **R2 URL expirada**
-→ URLs têm validade de 24h. Gere uma nova via `GET /v1/jobs/{job_id}` (regenera a URL se o job estiver completed).
+→ URLs têm validade configurável (`R2_URL_TTL_SECONDS`, default 24h). `GET /v1/jobs/{job_id}` reemite URL assinada para outputs com `r2_key`.
 
 **SSRF error ao usar `media.url`**
 → URLs de IPs privados (10.x, 192.168.x, 127.x) são bloqueadas por segurança. Use URLs públicas.

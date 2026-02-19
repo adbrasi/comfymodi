@@ -67,6 +67,7 @@ def main():
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-User-ID": "test_user_123",
     }
 
     # 1. Health check
@@ -105,6 +106,7 @@ def main():
                 "type": "raw",
             },
         ],
+        "user_id": "test_user_123",
     }
 
     try:

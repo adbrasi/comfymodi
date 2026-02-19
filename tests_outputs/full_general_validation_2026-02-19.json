@@ -1,0 +1,298 @@
+{
+  "started_at": "2026-02-19T21:50:08.963229+00:00",
+  "api": "https://cezarsaint--comfyui-saas-api.modal.run",
+  "tests": [
+    {
+      "name": "health_200",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"status\":\"ok\",\"timestamp\":\"2026-02-19T21:50:10.603676+00:00\"}"
+      }
+    },
+    {
+      "name": "auth_invalid_key_rejected",
+      "ok": true,
+      "details": {
+        "status": 401,
+        "expected": 401,
+        "body": "{\"detail\":\"Invalid API key\"}"
+      }
+    },
+    {
+      "name": "missing_x_user_id_rejected",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"Missing required X-User-ID header\"}"
+      }
+    },
+    {
+      "name": "empty_workflow_rejected",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"Workflow cannot be empty\"}"
+      }
+    },
+    {
+      "name": "user_id_mismatch_rejected",
+      "ok": true,
+      "details": {
+        "status": 403,
+        "expected": 403,
+        "body": "{\"detail\":\"user_id must match caller X-User-ID\"}"
+      }
+    },
+    {
+      "name": "ssrf_localhost_blocked",
+      "ok": true,
+      "details": {
+        "status": 400,
+        "expected": 400,
+        "body": "{\"detail\":\"media 'x.png' url host 'localhost' is restricted\"}"
+      }
+    },
+    {
+      "name": "e2e_create_job",
+      "ok": true,
+      "details": {
+        "job_id": "4de4348c-d3f6-490e-881a-91afce089281"
+      }
+    },
+    {
+      "name": "e2e_job_completed_with_output",
+      "ok": true,
+      "details": {
+        "status": "completed",
+        "outputs": 1,
+        "progress": 100
+      }
+    },
+    {
+      "name": "e2e_output_downloadable",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "bytes": 257533,
+        "file": "/mnt/d/adolfocesar/code/modal_arrakis/tests_outputs/fullcheck_e2e_4de4348c_0.png"
+      }
+    },
+    {
+      "name": "ownership_enforced_get_job",
+      "ok": true,
+      "details": {
+        "status": 404,
+        "expected": 404,
+        "body": "{\"detail\":\"Job not found\"}"
+      }
+    },
+    {
+      "name": "list_filter_mismatch_rejected",
+      "ok": true,
+      "details": {
+        "status": 403,
+        "expected": 403,
+        "body": "{\"detail\":\"user_id filter must match caller X-User-ID\"}"
+      }
+    },
+    {
+      "name": "signed_url_reissued",
+      "ok": true,
+      "details": {
+        "changed": true
+      }
+    },
+    {
+      "name": "cancel_create_job",
+      "ok": true,
+      "details": {
+        "job_id": "cd444bbd-7fca-415c-87be-27a3e81caf63"
+      }
+    },
+    {
+      "name": "cancel_endpoint_accepts",
+      "ok": true,
+      "details": {
+        "status": 200,
+        "body": "{\"message\":\"Job cancellation requested\"}"
+      }
+    },
+    {
+      "name": "cancel_reaches_terminal",
+      "ok": false,
+      "details": {
+        "ok": false,
+        "error": "poll timeout",
+        "last": {
+          "job_id": "cd444bbd-7fca-415c-87be-27a3e81caf63",
+          "status": "running",
+          "created_at": "2026-02-19T21:51:38.853201+00:00",
+          "started_at": "2026-02-19T21:51:43.233197+00:00",
+          "completed_at": null,
+          "user_id": "qa_cancel_dae41d",
+          "progress": 0,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 0,
+          "nodes_total": 7,
+          "outputs": [],
+          "error": null,
+          "logs": [
+            "[21:51:45] Job started",
+            "[21:51:45] Override node=4 field=ckpt_name",
+            "[21:51:45] Override node=6 field=text",
+            "[21:51:45] Override node=53 field=seed",
+            "[21:51:45] Override node=53 field=steps",
+            "[21:51:45] Override node=5 field=width",
+            "[21:51:45] Override node=5 field=height",
+            "[21:51:45] Prompt submitted: 83b9ca1f-1a6c-4079-b770-fef1c748c2f7",
+            "[21:51:45] Execution started — 0 nodes planned"
+          ]
+        }
+      }
+    },
+    {
+      "name": "stress_burst_has_accepts",
+      "ok": true,
+      "details": {
+        "accepted": 8
+      }
+    },
+    {
+      "name": "stress_burst_enforces_user_limit",
+      "ok": false,
+      "details": {
+        "accepted": 8,
+        "rejected_429": 0,
+        "other_errors": 0
+      }
+    },
+    {
+      "name": "stress_burst_no_unexpected_http",
+      "ok": true,
+      "details": {
+        "other_errors": []
+      }
+    },
+    {
+      "name": "stress_jobs_terminal",
+      "ok": true,
+      "details": {
+        "completed": 8,
+        "failed": 0,
+        "cancelled": 0,
+        "unknown": 0
+      }
+    }
+  ],
+  "artifacts": {
+    "e2e_image": "/mnt/d/adolfocesar/code/modal_arrakis/tests_outputs/fullcheck_e2e_4de4348c_0.png",
+    "stress_submissions": [
+      {
+        "idx": 3,
+        "status": 200,
+        "latency_s": 4.567,
+        "body": "{\"job_id\":\"3cb09852-dce1-4b4d-96b3-79e60a6a0b44\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:49.504665+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "3cb09852-dce1-4b4d-96b3-79e60a6a0b44"
+      },
+      {
+        "idx": 6,
+        "status": 200,
+        "latency_s": 6.383,
+        "body": "{\"job_id\":\"b8802f64-739e-46c7-bb13-0e056490b9a3\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:53.380384+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "b8802f64-739e-46c7-bb13-0e056490b9a3"
+      },
+      {
+        "idx": 1,
+        "status": 200,
+        "latency_s": 7.112,
+        "body": "{\"job_id\":\"fa673734-7476-470f-8957-47dbb6de81d9\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:53.813385+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "fa673734-7476-470f-8957-47dbb6de81d9"
+      },
+      {
+        "idx": 2,
+        "status": 200,
+        "latency_s": 8.304,
+        "body": "{\"job_id\":\"328e5434-5820-4539-ad22-ddec8da3d359\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:53.757883+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "328e5434-5820-4539-ad22-ddec8da3d359"
+      },
+      {
+        "idx": 0,
+        "status": 200,
+        "latency_s": 9.244,
+        "body": "{\"job_id\":\"182241e7-418d-4352-8f47-ca3f667218f9\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:54.754574+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "182241e7-418d-4352-8f47-ca3f667218f9"
+      },
+      {
+        "idx": 5,
+        "status": 200,
+        "latency_s": 9.425,
+        "body": "{\"job_id\":\"b82f241a-7fa7-4ab3-9e99-7ab97b48eaa5\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:54.742440+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "b82f241a-7fa7-4ab3-9e99-7ab97b48eaa5"
+      },
+      {
+        "idx": 7,
+        "status": 200,
+        "latency_s": 10.343,
+        "body": "{\"job_id\":\"4120ff28-d92a-4a5a-b11e-1cb84e3b90ee\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:55.092419+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "4120ff28-d92a-4a5a-b11e-1cb84e3b90ee"
+      },
+      {
+        "idx": 4,
+        "status": 200,
+        "latency_s": 14.609,
+        "body": "{\"job_id\":\"35e04a67-2650-4a95-bdc8-dedfcea270e8\",\"status\":\"queued\",\"created_at\":\"2026-02-19T21:54:58.024520+00:00\",\"user_id\":\"qa_stress_93f804\"}",
+        "job_id": "35e04a67-2650-4a95-bdc8-dedfcea270e8"
+      }
+    ],
+    "stress_job_ids": [
+      "3cb09852-dce1-4b4d-96b3-79e60a6a0b44",
+      "b8802f64-739e-46c7-bb13-0e056490b9a3",
+      "fa673734-7476-470f-8957-47dbb6de81d9",
+      "328e5434-5820-4539-ad22-ddec8da3d359",
+      "182241e7-418d-4352-8f47-ca3f667218f9",
+      "b82f241a-7fa7-4ab3-9e99-7ab97b48eaa5",
+      "4120ff28-d92a-4a5a-b11e-1cb84e3b90ee",
+      "35e04a67-2650-4a95-bdc8-dedfcea270e8"
+    ]
+  },
+  "stress": {
+    "submitted": 8,
+    "accepted": 8,
+    "rejected_429": 0,
+    "completed": 8,
+    "failed": 0,
+    "cancelled": 0,
+    "queue_wait_s": {
+      "min": 1.68,
+      "p50": 24.74,
+      "max": 30.91
+    },
+    "run_time_s": {
+      "min": 13.17,
+      "p50": 21.07,
+      "max": 38.53
+    },
+    "total_time_s": {
+      "min": 18.89,
+      "p50": 43.77,
+      "max": 68.98
+    },
+    "submission_latency_s": {
+      "min": 4.567,
+      "p50": 8.774,
+      "max": 14.609
+    }
+  },
+  "errors": [],
+  "totals": {
+    "tests": 19,
+    "passed": 17,
+    "failed": 2
+  },
+  "finished_at": "2026-02-19T21:56:07.976016+00:00"
+}

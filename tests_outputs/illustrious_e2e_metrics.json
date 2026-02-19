@@ -1,0 +1,90 @@
+{
+  "sequential": [
+    {
+      "tag": "illustrious_run1",
+      "job_id": "74d918bf-bb99-4d50-becf-4df800b6d9f2",
+      "queue_wait_s": 35.72,
+      "run_time_s": 48.71,
+      "total_time_s": 84.43,
+      "outputs": [
+        "tests_outputs/illustrious_run1_74d918bf_0.png"
+      ],
+      "r2_keys": [
+        "outputs/74d918bf-bb99-4d50-becf-4df800b6d9f2/ComfyUI_00009_.png"
+      ],
+      "override_ckpt_logged": true
+    },
+    {
+      "tag": "illustrious_run2",
+      "job_id": "ef2966b7-13a6-46cd-a0da-60dde34f4ed6",
+      "queue_wait_s": 2.25,
+      "run_time_s": 17.43,
+      "total_time_s": 19.68,
+      "outputs": [
+        "tests_outputs/illustrious_run2_ef2966b7_0.png"
+      ],
+      "r2_keys": [
+        "outputs/ef2966b7-13a6-46cd-a0da-60dde34f4ed6/ComfyUI_00010_.png"
+      ],
+      "override_ckpt_logged": true
+    },
+    {
+      "tag": "illustrious_run3_cold_after_idle",
+      "job_id": "8355dd4f-3581-490a-88c9-4f4849d50b87",
+      "queue_wait_s": 47.28,
+      "run_time_s": 121.51,
+      "total_time_s": 168.79,
+      "outputs": [
+        "tests_outputs/illustrious_run3_cold_after_idle_8355dd4f_0.png"
+      ],
+      "r2_keys": [
+        "outputs/8355dd4f-3581-490a-88c9-4f4849d50b87/ComfyUI_00011_.png"
+      ],
+      "override_ckpt_logged": true
+    }
+  ],
+  "concurrency": [
+    {
+      "tag": "illustrious_conc3",
+      "job_id": "aa9f5a70-e100-4f12-8f7e-ecd78161c676",
+      "queue_wait_s": 15.21,
+      "run_time_s": 38.78,
+      "total_time_s": 54.0,
+      "outputs": [
+        "tests_outputs/illustrious_conc3_aa9f5a70_0.png"
+      ],
+      "r2_keys": [
+        "outputs/aa9f5a70-e100-4f12-8f7e-ecd78161c676/ComfyUI_00012_.png"
+      ],
+      "override_ckpt_logged": true
+    },
+    {
+      "tag": "illustrious_conc1",
+      "job_id": "5354075b-759d-43ce-a905-440f81cb14cc",
+      "queue_wait_s": 33.92,
+      "run_time_s": 45.9,
+      "total_time_s": 79.82,
+      "outputs": [
+        "tests_outputs/illustrious_conc1_5354075b_0.png"
+      ],
+      "r2_keys": [
+        "outputs/5354075b-759d-43ce-a905-440f81cb14cc/ComfyUI_00012_.png"
+      ],
+      "override_ckpt_logged": true
+    },
+    {
+      "tag": "illustrious_conc2",
+      "job_id": "7bb9609d-d331-4f6e-810c-cc1e49afbf16",
+      "queue_wait_s": 2.99,
+      "run_time_s": 113.97,
+      "total_time_s": 116.95,
+      "outputs": [
+        "tests_outputs/illustrious_conc2_7bb9609d_0.png"
+      ],
+      "r2_keys": [
+        "outputs/7bb9609d-d331-4f6e-810c-cc1e49afbf16/ComfyUI_00012_.png"
+      ],
+      "override_ckpt_logged": true
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "ts": "2026-02-19T22:16:07.508675+00:00",
+  "immediate_create": 200,
+  "immediate": {
+    "job_id": "39bed789-e602-40c8-828a-3b8cd1fb15c1",
+    "cancel_http": 200,
+    "terminal": {
+      "ok": false,
+      "err": "timeout",
+      "last": {
+        "job_id": "39bed789-e602-40c8-828a-3b8cd1fb15c1",
+        "status": "running",
+        "created_at": "2026-02-19T22:16:06.288447+00:00",
+        "started_at": "2026-02-19T22:16:15.383832+00:00",
+        "completed_at": null,
+        "user_id": "p0_cancel_immediate_c390f0",
+        "progress": 0,
+        "current_step": 0,
+        "total_steps": 0,
+        "current_node": null,
+        "nodes_done": 0,
+        "nodes_total": 7,
+        "outputs": [],
+        "error": null,
+        "logs": [
+          "[22:16:16] Job started",
+          "[22:16:16] Override node=4 field=ckpt_name",
+          "[22:16:16] Override node=6 field=text",
+          "[22:16:16] Override node=53 field=seed",
+          "[22:16:16] Override node=53 field=steps",
+          "[22:16:16] Override node=5 field=width",
+          "[22:16:16] Override node=5 field=height",
+          "[22:16:16] Prompt submitted: af7551ed-d957-4652-bf34-08c4c5a91676",
+          "[22:16:16] Execution started — 0 nodes planned"
+        ]
+      },
+      "elapsed": 121.52
+    }
+  },
+  "running_create": 200,
+  "running": {
+    "job_id": "69ab6568-fe83-4d46-9106-e8c27718d93b",
+    "before": "running",
+    "cancel_http": 200,
+    "terminal": {
+      "ok": true,
+      "status": "cancelled",
+      "elapsed": 1.56,
+      "job": {
+        "job_id": "69ab6568-fe83-4d46-9106-e8c27718d93b",
+        "status": "cancelled",
+        "created_at": "2026-02-19T22:18:21.984325+00:00",
+        "started_at": "2026-02-19T22:18:33.698877+00:00",
+        "completed_at": "2026-02-19T22:18:37.517765+00:00",
+        "user_id": "p0_cancel_running_0943e7",
+        "progress": 0,
+        "current_step": 0,
+        "total_steps": 0,
+        "current_node": null,
+        "nodes_done": 0,
+        "nodes_total": 0,
+        "outputs": [],
+        "error": "Cancelled by user",
+        "logs": []
+      }
+    }
+  },
+  "burst": {
+    "accepted": 2,
+    "rejected_429": 0,
+    "other": 6,
+    "subs": [
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 200,
+        "job_id": "e7ecfe6d-96ad-4d69-8283-ffedcda4efd3",
+        "body": "{\"job_id\":\"e7ecfe6d-96ad-4d69-8283-ffedcda4efd3\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:18:43.404977+00:00\",\"user"
+      },
+      {
+        "status": 200,
+        "job_id": "2651b164-109b-4eb4-b3dc-359896713790",
+        "body": "{\"job_id\":\"2651b164-109b-4eb4-b3dc-359896713790\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:18:50.121523+00:00\",\"user"
+      }
+    ]
+  },
+  "all_ok": false
+}

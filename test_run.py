@@ -22,7 +22,10 @@ if not KEY:
     print("ERROR: set COMFYUI_API_KEY env var")
     sys.exit(1)
 
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+HEADERS = {
+    "Authorization": f"Bearer {KEY}",
+    "X-User-ID": "test_user_123",
+}
 
 workflow = json.loads(Path("workflows/sdxl_simple_exampleV2.json").read_text())
 
@@ -40,6 +43,7 @@ r = requests.post(
             {"node": "53", "field": "seed", "value": 999, "type": "raw"},
             {"node": "53", "field": "steps", "value": 20, "type": "raw"},
         ],
+        "user_id": "test_user_123",
     },
     headers=HEADERS,
     timeout=30,

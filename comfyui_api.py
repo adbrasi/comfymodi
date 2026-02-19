@@ -13,13 +13,18 @@ import uuid
 import base64
 import time
 import subprocess
+import os
+import socket
 import hashlib
 import hmac
 import logging
+import ipaddress
+import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from enum import Enum
+from contextlib import contextmanager
 
 import modal
 import modal.experimental
@@ -40,13 +45,45 @@ CACHE_DIR = "/cache"
 JOBS_DIR = "/jobs"
 COMFY_DIR = "/root/comfy/ComfyUI"
 
+# Runtime/scaling knobs (override via env vars at deploy time)
+GPU_MAX_CONTAINERS = int(os.environ.get("GPU_MAX_CONTAINERS", "20"))
+GPU_MIN_CONTAINERS = int(os.environ.get("GPU_MIN_CONTAINERS", "1"))
+GPU_BUFFER_CONTAINERS = int(os.environ.get("GPU_BUFFER_CONTAINERS", "1"))
+GPU_SCALEDOWN_WINDOW_SECONDS = int(os.environ.get("GPU_SCALEDOWN_WINDOW_SECONDS", "300"))
+API_MAX_CONTAINERS = int(os.environ.get("API_MAX_CONTAINERS", "10"))
+API_SCALEDOWN_WINDOW_SECONDS = int(os.environ.get("API_SCALEDOWN_WINDOW_SECONDS", "60"))
+MAX_ACTIVE_JOBS_GLOBAL = int(os.environ.get("MAX_ACTIVE_JOBS_GLOBAL", "200"))
+MAX_ACTIVE_JOBS_PER_USER = int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "5"))
+QUEUED_TIMEOUT_SECONDS = int(os.environ.get("QUEUED_TIMEOUT_SECONDS", "240"))
+R2_URL_TTL_SECONDS = int(os.environ.get("R2_URL_TTL_SECONDS", "86400"))
+MAX_EXTERNAL_MEDIA_BYTES = 50 * 1024 * 1024
+MAX_EXTERNAL_REDIRECTS = 3
+ACTIVE_SLOT_LOCK_TIMEOUT_SECONDS = float(os.environ.get("ACTIVE_SLOT_LOCK_TIMEOUT_SECONDS", "20"))
+
+TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+ACTIVE_SLOTS_DIR = Path(JOBS_DIR) / "_active_slots"
+ACTIVE_SLOTS_LOCK_FILE = Path(JOBS_DIR) / "_locks" / "active_slots.lock"
+CANCEL_MARKERS_DIR = Path(JOBS_DIR) / "_cancel_markers"
+
+
+def _parse_gpu_config() -> str | list[str]:
+    """Allow single GPU or fallback list via env (e.g. 'l40s,a100,any')."""
+    raw = os.environ.get("GPU_CONFIG", "l40s,a100,a10g")
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) <= 1:
+        return parts[0] if parts else "l40s"
+    return parts
+
+
+GPU_CONFIG = _parse_gpu_config()
+
 # Models to pre-download. Add entries here to include more models.
 # Format: (hf_repo_id, hf_filename, target_subdir_under_CACHE_DIR/models)
 MODELS = [
-    # SDXL checkpoint for testing
+    # SDXL checkpoint (Illustrious XL)
     (
-        "ChenkinNoob/ChenkinNoob-XL-V0.2",
-        "ChenkinNoob-XL-V0.2.safetensors",
+        "OnomaAIResearch/Illustrious-XL-v1.0",
+        "Illustrious-XL-v1.0.safetensors",
         "checkpoints",
     ),
 ]
@@ -198,6 +235,11 @@ api_image = (
     .env({"PYTHONUNBUFFERED": "1"})
 )
 
+maintenance_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("pydantic", "fastapi[standard]")
+)
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -232,16 +274,15 @@ class JobCreate(BaseModel):
     inputs: List[WorkflowOverride] = Field(default_factory=list)
     media: List[MediaInput] = Field(default_factory=list)
     webhook_url: Optional[str] = None
-    # Optional caller-supplied identifier for multi-tenant tracking.
-    # Your SaaS backend should pass your internal user/org ID here.
-    user_id: Optional[str] = None
+    # Required tenant identifier from your SaaS backend.
+    user_id: str = Field(min_length=1, max_length=128)
 
 
 class JobCreateResponse(BaseModel):
     job_id: str
     status: JobStatus
     created_at: str
-    user_id: Optional[str] = None
+    user_id: str
 
 
 class JobStatusResponse(BaseModel):
@@ -315,13 +356,15 @@ def generate_r2_url(key: str, expires_in: int = 3600) -> str:
 
 
 @app.cls(
-    gpu="L40S",
+    gpu=GPU_CONFIG,
     image=gpu_image,
     volumes={CACHE_DIR: cache_vol, JOBS_DIR: jobs_vol},
     secrets=[r2_secret],
     enable_memory_snapshot=True,
-    scaledown_window=300,  # keep warm 5 min after last job
-    max_containers=10,
+    scaledown_window=GPU_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=GPU_MAX_CONTAINERS,
+    min_containers=GPU_MIN_CONTAINERS,
+    buffer_containers=GPU_BUFFER_CONTAINERS,
     timeout=600,
 )
 @modal.concurrent(max_inputs=1)
@@ -399,10 +442,20 @@ class ComfyService:
             job_data = json.loads(job_file.read_text())
 
             # Guard: check if job was cancelled/timed-out while GPU was spinning up
-            if job_data.get("status") in ("cancelled", "failed"):
+            if job_data.get("status") in ("cancelled", "failed") or _has_cancel_marker(job_id):
                 print(f"[job:{short_id}] Job already {job_data['status']} before execution — skipping")
+                _release_active_slot(job_id)
                 return
 
+            # Avoid status races: cancellation may happen between initial read
+            # and the transition to "running".
+            jobs_vol.reload()
+            latest = json.loads(job_file.read_text())
+            if latest.get("status") in ("cancelled", "failed") or _has_cancel_marker(job_id):
+                print(f"[job:{short_id}] Job became {latest['status']} before start — skipping")
+                _release_active_slot(job_id)
+                return
+            job_data = latest
             job_data["logs"] = []
 
             # 2. Mark as running
@@ -434,10 +487,13 @@ class ComfyService:
                     dest.write_bytes(base64.b64decode(item["data"]))
                     log(f"Media loaded from base64: {safe_name}")
                 elif item.get("url"):
-                    r = req.get(item["url"], timeout=30)
-                    r.raise_for_status()
-                    dest.write_bytes(r.content)
-                    log(f"Media downloaded: {safe_name} ({len(r.content)//1024}KB)")
+                    payload = _safe_fetch_external(
+                        item["url"],
+                        field=f"media '{safe_name}' url",
+                        timeout=30,
+                    )
+                    dest.write_bytes(payload)
+                    log(f"Media downloaded: {safe_name} ({len(payload)//1024}KB)")
 
                 media_remap[safe_name] = str(Path(job_id) / safe_name)
 
@@ -509,17 +565,18 @@ class ComfyService:
                     last_commit = now
 
             while True:
-                # Periodic cancellation check (every ~15 s) — reads the job
+                # Periodic cancellation check (every ~5 s) — reads the job
                 # file from the volume so the cancel_job endpoint can signal us.
                 _t = time.time()
-                if _t - last_cancel_check > 15:
+                if _t - last_cancel_check > 5:
                     last_cancel_check = _t
                     try:
                         jobs_vol.reload()
                         cur_status = json.loads(job_file.read_text()).get("status")
-                        if cur_status in ("cancelled", "failed"):
+                        if cur_status in ("cancelled", "failed") or _has_cancel_marker(job_id):
                             log(f"Job {cur_status} mid-execution — stopping")
                             ws.close()
+                            _release_active_slot(job_id)
                             return
                     except Exception:
                         pass
@@ -613,6 +670,15 @@ class ComfyService:
             ws.close()
             log("WebSocket closed")
 
+            # If API cancellation won the race near the end of execution,
+            # preserve cancelled status and skip completion write.
+            jobs_vol.reload()
+            latest = _safe_read_json(job_file) or {}
+            if latest.get("status") == "cancelled" or latest.get("cancel_requested_at") or _has_cancel_marker(job_id):
+                log("Cancellation detected after execution; skipping completion write")
+                _release_active_slot(job_id)
+                return
+
             # 7. Collect outputs and upload to R2
             log("Collecting outputs ...")
             outputs = []
@@ -672,6 +738,13 @@ class ComfyService:
             ).total_seconds()
             log(f"Completed! {len(outputs)} output(s) | elapsed: {elapsed:.1f}s")
 
+            jobs_vol.reload()
+            latest = _safe_read_json(job_file) or {}
+            if latest.get("status") == "cancelled" or latest.get("cancel_requested_at") or _has_cancel_marker(job_id):
+                log("Cancellation detected before finalize; keeping cancelled status")
+                _release_active_slot(job_id)
+                return
+
             job_data.update({
                 "status": "completed",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -681,6 +754,7 @@ class ComfyService:
                 "outputs": outputs,
             })
             self._save_job(job_file, job_data)
+            _release_active_slot(job_id)
 
             if job_data.get("webhook_url"):
                 self._send_webhook(job_data["webhook_url"], job_id, "job.completed")
@@ -693,6 +767,7 @@ class ComfyService:
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             })
             self._save_job(job_file, job_data)
+            _release_active_slot(job_id)
 
             if job_data.get("webhook_url"):
                 self._send_webhook(job_data["webhook_url"], job_id, "job.failed")
@@ -706,6 +781,29 @@ class ComfyService:
     def _save_job(self, path: Path, data: dict, commit: bool = True):
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Never overwrite a terminal state with an in-flight state (e.g. running)
+        # after a cancellation request has already been persisted by the API.
+        if commit:
+            try:
+                jobs_vol.reload()
+                if path.exists():
+                    current = _safe_read_json(path) or {}
+                    current_status = current.get("status")
+                    if _has_cancel_marker(path.stem) and data.get("status") not in TERMINAL_STATUSES:
+                        data["status"] = "cancelled"
+                        data["error"] = current.get("error") or "Cancelled by user"
+                        data["completed_at"] = current.get("completed_at") or datetime.now(timezone.utc).isoformat()
+                        return
+                    if current_status in TERMINAL_STATUSES and data.get("status") not in TERMINAL_STATUSES:
+                        data["status"] = current_status
+                        data["error"] = current.get("error")
+                        data["completed_at"] = current.get("completed_at")
+                        data["outputs"] = current.get("outputs", data.get("outputs", []))
+                        return
+            except Exception:
+                pass
+
         path.write_text(json.dumps(data))
         if commit:
             jobs_vol.commit()
@@ -738,6 +836,7 @@ class ComfyService:
         }
         for attempt in range(3):
             try:
+                _validate_external_url(url, field="webhook_url")
                 with httpx.Client(timeout=10) as c:
                     c.post(url, json=payload).raise_for_status()
                 return
@@ -760,17 +859,31 @@ security = HTTPBearer()
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate the Bearer token against API_KEY secret."""
-    import os
-
     expected = os.environ.get("API_KEY", "")
     if not expected or credentials.credentials != expected:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return credentials.credentials
 
 
+def get_caller_user_id(request: Request) -> str:
+    """Require an explicit caller identity for tenant-level authorization."""
+    caller_user_id = request.headers.get("X-User-ID", "").strip()
+    if not caller_user_id:
+        raise HTTPException(400, "Missing required X-User-ID header")
+    if len(caller_user_id) > 128:
+        raise HTTPException(400, "X-User-ID too long (max 128 chars)")
+    return caller_user_id
+
+
 @web_app.post("/v1/jobs", response_model=JobCreateResponse)
-async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
+def create_job(
+    body: JobCreate,
+    _key: str = Depends(verify_api_key),
+    caller_user_id: str = Depends(get_caller_user_id),
+):
     """Submit a ComfyUI workflow job."""
+    if body.user_id != caller_user_id:
+        raise HTTPException(403, "user_id must match caller X-User-ID")
     if not body.workflow:
         raise HTTPException(400, "Workflow cannot be empty")
     if len(body.media) > 10:
@@ -792,6 +905,7 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    _reserve_active_slot(job_id, caller_user_id)
 
     job_data = {
         "job_id": job_id,
@@ -805,20 +919,45 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
         "webhook_url": body.webhook_url,
         "progress": 0,
         "outputs": [],
+        "function_call_id": None,
     }
 
-    job_file = Path(JOBS_DIR) / f"{job_id}.json"
-    job_file.parent.mkdir(parents=True, exist_ok=True)
-    job_file.write_text(json.dumps(job_data))
-    jobs_vol.commit()
+    try:
+        job_file = Path(JOBS_DIR) / f"{job_id}.json"
+        job_file.parent.mkdir(parents=True, exist_ok=True)
+        job_file.write_text(json.dumps(job_data))
+        jobs_vol.commit()
 
-    # Dispatch to GPU worker
-    ComfyService().run_job.spawn(job_id)
+        # Dispatch to GPU worker and persist the call id for robust cancellation.
+        function_call = ComfyService().run_job.spawn(job_id)
+        jobs_vol.reload()
+        latest = _safe_read_json(job_file) or dict(job_data)
+        latest["function_call_id"] = function_call.object_id
+        already_terminal = latest.get("status") in TERMINAL_STATUSES
+        job_file.write_text(json.dumps(latest))
+        jobs_vol.commit()
+
+        # If the job was cancelled between enqueue and call-id persist,
+        # immediately propagate cancellation to the spawned FunctionCall.
+        if already_terminal:
+            try:
+                modal.FunctionCall.from_id(function_call.object_id).cancel()
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            job_file = Path(JOBS_DIR) / f"{job_id}.json"
+            job_data["status"] = "failed"
+            job_data["error"] = f"Failed to enqueue GPU job: {e}"
+            job_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+            job_file.write_text(json.dumps(job_data))
+            jobs_vol.commit()
+        except Exception:
+            pass
+        _release_active_slot(job_id)
+        raise HTTPException(503, "Could not dispatch job to worker")
 
     return JobCreateResponse(job_id=job_id, status=JobStatus.QUEUED, created_at=now, user_id=body.user_id)
-
-
-QUEUED_TIMEOUT_SECONDS = 120  # 2 min — if still queued, GPU unavailable → fail
 
 
 # ---------------------------------------------------------------------------
@@ -827,18 +966,7 @@ QUEUED_TIMEOUT_SECONDS = 120  # 2 min — if still queued, GPU unavailable → f
 
 
 def _validate_external_url(url: str, field: str = "URL") -> str:
-    """Validate a user-supplied URL is safe to fetch (SSRF prevention).
-
-    Blocks:
-    - Non-http(s) schemes (file://, ftp://, etc.)
-    - Private RFC-1918 ranges (10.x, 172.16-31.x, 192.168.x)
-    - Loopback (127.x, ::1)
-    - Link-local (169.254.x, fe80::)
-    - Reserved / unspecified addresses
-    """
-    import ipaddress
-    import urllib.parse
-
+    """Validate a user-supplied URL is externally reachable (SSRF prevention)."""
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception:
@@ -851,40 +979,264 @@ def _validate_external_url(url: str, field: str = "URL") -> str:
     if not host:
         raise ValueError(f"{field} is missing a hostname")
 
-    # Reject bare IP addresses in private/loopback ranges
-    try:
-        ip = ipaddress.ip_address(host)
-        if any([
-            ip.is_private, ip.is_loopback, ip.is_link_local,
-            ip.is_reserved, ip.is_unspecified, ip.is_multicast,
-        ]):
-            raise ValueError(f"{field} resolves to a restricted IP range — not allowed")
-    except ValueError as exc:
-        if "restricted" in str(exc):
-            raise
-        # host is a domain name, not a raw IP — that's fine
+    normalized_host = host.strip().lower().rstrip(".")
+    if normalized_host in {"localhost", "localhost.localdomain"} or normalized_host.endswith(".localhost"):
+        raise ValueError(f"{field} host {host!r} is restricted")
+
+    for ip in _resolve_host_ips(normalized_host, field):
+        if _is_restricted_ip(ip):
+            raise ValueError(f"{field} resolves to restricted IP {ip} — not allowed")
 
     return url
 
 
-def _check_queued_timeout(data: dict) -> dict:
-    """If a job has been queued too long (GPU unavailable), auto-fail it."""
-    if data.get("status") != "queued":
-        return data
-    created = datetime.fromisoformat(data["created_at"])
-    elapsed = (datetime.now(timezone.utc) - created).total_seconds()
-    if elapsed > QUEUED_TIMEOUT_SECONDS:
-        data["status"] = "failed"
-        data["error"] = f"Job timed out after {elapsed:.0f}s in queue (GPU unavailable)"
-        data["completed_at"] = datetime.now(timezone.utc).isoformat()
-        job_file = Path(JOBS_DIR) / f"{data['job_id']}.json"
-        job_file.write_text(json.dumps(data))
+def _is_restricted_ip(ip: ipaddress._BaseAddress) -> bool:
+    return any(
+        [
+            ip.is_private,
+            ip.is_loopback,
+            ip.is_link_local,
+            ip.is_reserved,
+            ip.is_unspecified,
+            ip.is_multicast,
+            not ip.is_global,
+        ]
+    )
+
+
+def _resolve_host_ips(host: str, field: str) -> List[ipaddress._BaseAddress]:
+    ips: list[ipaddress._BaseAddress] = []
+
+    try:
+        ip = ipaddress.ip_address(host)
+        return [ip]
+    except ValueError:
+        pass
+
+    try:
+        info = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise ValueError(f"{field} hostname could not be resolved: {host!r} ({e})")
+
+    for _, _, _, _, sockaddr in info:
+        try:
+            resolved = ipaddress.ip_address(sockaddr[0])
+            if resolved not in ips:
+                ips.append(resolved)
+        except ValueError:
+            continue
+
+    if not ips:
+        raise ValueError(f"{field} hostname has no valid IPs: {host!r}")
+
+    return ips
+
+
+def _safe_fetch_external(url: str, field: str, timeout: int = 30) -> bytes:
+    import requests as req
+
+    current_url = url
+    redirects = 0
+    while True:
+        _validate_external_url(current_url, field=field)
+        response = req.get(
+            current_url,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            location = response.headers.get("Location")
+            if 300 <= response.status_code < 400 and location:
+                if redirects >= MAX_EXTERNAL_REDIRECTS:
+                    raise ValueError(f"{field} exceeded redirect limit ({MAX_EXTERNAL_REDIRECTS})")
+                current_url = urllib.parse.urljoin(current_url, location)
+                redirects += 1
+                continue
+
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_EXTERNAL_MEDIA_BYTES:
+                raise ValueError(f"{field} exceeds {MAX_EXTERNAL_MEDIA_BYTES // (1024*1024)}MB limit")
+
+            total = 0
+            chunks: list[bytes] = []
+            for chunk in response.iter_content(1 << 20):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_EXTERNAL_MEDIA_BYTES:
+                    raise ValueError(f"{field} exceeds {MAX_EXTERNAL_MEDIA_BYTES // (1024*1024)}MB limit")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            response.close()
+
+
+@contextmanager
+def _active_slot_lock(timeout_s: float = ACTIVE_SLOT_LOCK_TIMEOUT_SECONDS):
+    ACTIVE_SLOTS_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    start = time.time()
+    acquired = False
+    try:
+        while True:
+            try:
+                fd = os.open(str(ACTIVE_SLOTS_LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.write(fd, datetime.now(timezone.utc).isoformat().encode())
+                os.close(fd)
+                acquired = True
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - ACTIVE_SLOTS_LOCK_FILE.stat().st_mtime
+                    if age > 30:
+                        ACTIVE_SLOTS_LOCK_FILE.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.time() - start > timeout_s:
+                    raise TimeoutError("quota lock busy")
+                time.sleep(0.05)
+        yield
+    finally:
+        try:
+            if acquired:
+                ACTIVE_SLOTS_LOCK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _safe_read_json(path: Path) -> Optional[dict]:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _cancel_marker(job_id: str) -> Path:
+    return CANCEL_MARKERS_DIR / f"{job_id}.cancel"
+
+
+def _mark_cancel_requested(job_id: str):
+    CANCEL_MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+    _cancel_marker(job_id).write_text(datetime.now(timezone.utc).isoformat())
+    jobs_vol.commit()
+
+
+def _has_cancel_marker(job_id: str) -> bool:
+    return _cancel_marker(job_id).exists()
+
+
+def _clear_cancel_marker(job_id: str):
+    marker = _cancel_marker(job_id)
+    if marker.exists():
+        marker.unlink()
         jobs_vol.commit()
-    return data
+
+
+def _reconcile_active_slots_locked():
+    now = datetime.now(timezone.utc)
+    ACTIVE_SLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for marker in ACTIVE_SLOTS_DIR.glob("*.json"):
+        marker_data = _safe_read_json(marker) or {}
+        job_id = marker_data.get("job_id", marker.stem)
+        job_file = Path(JOBS_DIR) / f"{job_id}.json"
+        should_remove = False
+
+        if job_file.exists():
+            job_data = _safe_read_json(job_file) or {}
+            should_remove = job_data.get("status") in TERMINAL_STATUSES
+        else:
+            created_at = marker_data.get("created_at")
+            if not created_at:
+                should_remove = True
+            else:
+                try:
+                    age = (now - datetime.fromisoformat(created_at)).total_seconds()
+                    should_remove = age > 600
+                except Exception:
+                    should_remove = True
+
+        if should_remove:
+            try:
+                marker.unlink()
+            except Exception:
+                pass
+
+
+def _reserve_active_slot(job_id: str, caller_user_id: str):
+    jobs_vol.reload()
+    try:
+        with _active_slot_lock():
+            _reconcile_active_slots_locked()
+            ACTIVE_SLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+            active_global = 0
+            active_for_user = 0
+            for marker in ACTIVE_SLOTS_DIR.glob("*.json"):
+                marker_data = _safe_read_json(marker)
+                if not marker_data:
+                    continue
+                active_global += 1
+                if marker_data.get("user_id") == caller_user_id:
+                    active_for_user += 1
+
+            if active_global >= MAX_ACTIVE_JOBS_GLOBAL:
+                raise HTTPException(429, "Global active job capacity reached. Try again soon.")
+            if active_for_user >= MAX_ACTIVE_JOBS_PER_USER:
+                raise HTTPException(429, "User active job limit reached. Wait for running jobs to finish.")
+
+            (ACTIVE_SLOTS_DIR / f"{job_id}.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job_id,
+                        "user_id": caller_user_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            )
+            jobs_vol.commit()
+    except TimeoutError:
+        raise HTTPException(429, "Quota lock busy. Retry in a few seconds.")
+
+
+def _release_active_slot(job_id: str):
+    # Best-effort release: never fail worker execution due to quota lock issues.
+    marker = ACTIVE_SLOTS_DIR / f"{job_id}.json"
+    try:
+        if marker.exists():
+            marker.unlink()
+            jobs_vol.commit()
+    except Exception:
+        pass
+
+
+def _assert_job_owner(data: dict, caller_user_id: str):
+    if data.get("user_id") != caller_user_id:
+        raise HTTPException(404, "Job not found")
+
+
+def _refresh_output_urls(outputs: list[dict]) -> list[dict]:
+    refreshed: list[dict] = []
+    for item in outputs:
+        out = dict(item)
+        key = out.get("r2_key")
+        if key:
+            try:
+                out["url"] = generate_r2_url(key, expires_in=R2_URL_TTL_SECONDS)
+            except Exception:
+                pass
+        refreshed.append(out)
+    return refreshed
 
 
 @web_app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
+def get_job(
+    job_id: str,
+    _key: str = Depends(verify_api_key),
+    caller_user_id: str = Depends(get_caller_user_id),
+):
     """Get job status and outputs."""
     job_file = Path(JOBS_DIR) / f"{job_id}.json"
     jobs_vol.reload()
@@ -892,7 +1244,18 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
 
-    data = _check_queued_timeout(json.loads(job_file.read_text()))
+    data = json.loads(job_file.read_text())
+    _assert_job_owner(data, caller_user_id)
+
+    # Self-heal status if a cancel marker exists but stale non-terminal
+    # status was persisted by an in-flight worker.
+    if data.get("status") in ("queued", "running") and _has_cancel_marker(job_id):
+        data["status"] = "cancelled"
+        data["error"] = data.get("error") or "Cancelled by user"
+        data["completed_at"] = data.get("completed_at") or datetime.now(timezone.utc).isoformat()
+        job_file.write_text(json.dumps(data))
+        jobs_vol.commit()
+
     return JobStatusResponse(
         job_id=data["job_id"],
         status=data["status"],
@@ -906,20 +1269,24 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
         current_node=data.get("current_node"),
         nodes_done=data.get("nodes_done", 0),
         nodes_total=data.get("nodes_total", 0),
-        outputs=data.get("outputs", []),
+        outputs=_refresh_output_urls(data.get("outputs", [])),
         error=data.get("error"),
         logs=data.get("logs", []),
     )
 
 
 @web_app.get("/v1/jobs")
-async def list_jobs(
+def list_jobs(
     status: Optional[str] = None,
     limit: int = 50,
     user_id: Optional[str] = None,
     _key: str = Depends(verify_api_key),
+    caller_user_id: str = Depends(get_caller_user_id),
 ):
-    """List recent jobs. Filter by status and/or user_id for multi-tenant isolation."""
+    """List recent jobs for caller tenant only."""
+    if user_id and user_id != caller_user_id:
+        raise HTTPException(403, "user_id filter must match caller X-User-ID")
+
     limit = min(limit, 200)
     jobs_path = Path(JOBS_DIR)
     jobs_vol.reload()
@@ -927,20 +1294,24 @@ async def list_jobs(
     results = []
     if jobs_path.exists():
         files = sorted(jobs_path.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
-        for jf in files[:limit]:
+        for jf in files:
             try:
-                d = _check_queued_timeout(json.loads(jf.read_text()))
+                d = json.loads(jf.read_text())
+                if d.get("user_id") != caller_user_id:
+                    continue
                 if status and d["status"] != status:
                     continue
-                if user_id and d.get("user_id") != user_id:
-                    continue
-                results.append({
-                    "job_id": d["job_id"],
-                    "status": d["status"],
-                    "created_at": d["created_at"],
-                    "progress": d.get("progress", 0),
-                    "user_id": d.get("user_id"),
-                })
+                results.append(
+                    {
+                        "job_id": d["job_id"],
+                        "status": d["status"],
+                        "created_at": d["created_at"],
+                        "progress": d.get("progress", 0),
+                        "user_id": d.get("user_id"),
+                    }
+                )
+                if len(results) >= limit:
+                    break
             except Exception:
                 continue
 
@@ -948,11 +1319,14 @@ async def list_jobs(
 
 
 @web_app.delete("/v1/jobs/{job_id}")
-async def cancel_job(job_id: str, _key: str = Depends(verify_api_key)):
+def cancel_job(
+    job_id: str,
+    _key: str = Depends(verify_api_key),
+    caller_user_id: str = Depends(get_caller_user_id),
+):
     """Cancel a queued or running job.
 
-    Sets status to 'cancelled' in the volume. The GPU worker polls this flag
-    every ~15 seconds and will stop cleanly on the next cycle.
+    Requests cancellation via Modal FunctionCall API and marks the job state.
     """
     job_file = Path(JOBS_DIR) / f"{job_id}.json"
     jobs_vol.reload()
@@ -961,20 +1335,34 @@ async def cancel_job(job_id: str, _key: str = Depends(verify_api_key)):
         raise HTTPException(404, "Job not found")
 
     data = json.loads(job_file.read_text())
+    _assert_job_owner(data, caller_user_id)
     if data["status"] in ("completed", "failed", "cancelled"):
         return {"message": f"Job already {data['status']}"}
 
     data["status"] = "cancelled"
     data["error"] = "Cancelled by user"
-    data["completed_at"] = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    data["cancel_requested_at"] = now
+    data["completed_at"] = now
     job_file.write_text(json.dumps(data))
     jobs_vol.commit()
+    _mark_cancel_requested(job_id)
+    _release_active_slot(job_id)
 
-    return {"message": "Job cancelled — worker will stop within ~15 seconds"}
+    call_id = data.get("function_call_id")
+    if call_id:
+        try:
+            modal.FunctionCall.from_id(call_id).cancel()
+        except Exception as e:
+            data.setdefault("logs", []).append(f"[cancel] FunctionCall.cancel failed: {e}")
+            job_file.write_text(json.dumps(data))
+            jobs_vol.commit()
+
+    return {"message": "Job cancellation requested"}
 
 
 @web_app.get("/health")
-async def health():
+def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
@@ -986,9 +1374,9 @@ async def health():
 @app.function(
     image=api_image,
     volumes={JOBS_DIR: jobs_vol},
-    secrets=[api_secret],
-    max_containers=5,
-    scaledown_window=60,
+    secrets=[api_secret, r2_secret],
+    max_containers=API_MAX_CONTAINERS,
+    scaledown_window=API_SCALEDOWN_WINDOW_SECONDS,
 )
 @modal.asgi_app()
 def api():
@@ -1018,8 +1406,46 @@ def verify_setup():
 
 
 @app.function(
+    schedule=modal.Cron("*/1 * * * *"),
+    image=maintenance_image,
+    volumes={JOBS_DIR: jobs_vol},
+)
+def fail_stale_queued_jobs():
+    """Mark stale queued jobs as failed (kept out of GET/list read paths)."""
+    now = datetime.now(timezone.utc)
+    jobs_path = Path(JOBS_DIR)
+    jobs_vol.reload()
+    changed = 0
+
+    if jobs_path.exists():
+        for jf in jobs_path.glob("*.json"):
+            try:
+                d = json.loads(jf.read_text())
+            except Exception:
+                continue
+            if d.get("status") != "queued":
+                continue
+            created = datetime.fromisoformat(d["created_at"])
+            elapsed = (now - created).total_seconds()
+            if elapsed <= QUEUED_TIMEOUT_SECONDS:
+                continue
+            d["status"] = "failed"
+            d["error"] = f"Job timed out after {elapsed:.0f}s in queue (GPU unavailable)"
+            d["completed_at"] = now.isoformat()
+            d["updated_at"] = now.isoformat()
+            jf.write_text(json.dumps(d))
+            _clear_cancel_marker(d.get("job_id", jf.stem))
+            _release_active_slot(d.get("job_id", jf.stem))
+            changed += 1
+
+    if changed:
+        jobs_vol.commit()
+        print(f"Marked {changed} queued jobs as failed after timeout")
+
+
+@app.function(
     schedule=modal.Cron("0 3 * * *"),
-    image=modal.Image.debian_slim(python_version="3.12"),
+    image=maintenance_image,
     volumes={JOBS_DIR: jobs_vol},
 )
 def cleanup_old_jobs():
@@ -1038,6 +1464,8 @@ def cleanup_old_jobs():
                 created = datetime.fromisoformat(d["created_at"])
                 if created < cutoff:
                     jf.unlink()
+                    _clear_cancel_marker(d.get("job_id", jf.stem))
+                    _release_active_slot(d.get("job_id", jf.stem))
                     deleted += 1
             except Exception:
                 continue

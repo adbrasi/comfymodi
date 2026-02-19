@@ -1,200 +1,205 @@
-# Analise de prontidao SaaS (v2)
+# Analise de prontidao SaaS (v2 - revisado)
 
 Data: 19/02/2026  
-Escopo: comparar seu estado atual com referencias oficiais da Modal em `modal-examples/06_gpu_and_ml` (principalmente `comfyui`, `memory_snapshot`, `gpu_packing`, `gpu_fallbacks`) e avaliar se ja da para plugar no seu site.
+Base de comparacao: codigo atual + `README.md` + exemplos oficiais Modal + docs Modal (Context7).
 
 ## Veredito rapido
-- **Pronto para beta fechado via backend seu**: **SIM** (com controles).
-- **Pronto para producao publica (escala + multitenancy forte)**: **AINDA NAO**.
+- **Pronto para producao controlada (2k+ DAU) via backend proprio**: **SIM, com pre-condicoes operacionais**.
+- **Pronto para abertura publica sem gateway/controles externos**: **NAO**.
 
-## Achados (ordenados por severidade)
+## O que foi corrigido agora (codigo)
+1. **SSRF endurecido (DNS + localhost + redirect + limite de tamanho)**
+- No codigo: `comfyui_api.py:877`, `comfyui_api.py:916`, `comfyui_api.py:944`, `comfyui_api.py:456`.
+- O que mudou:
+- bloqueio explicito de `localhost`.
+- resolucao DNS e bloqueio de IP restrito apos resolucao.
+- controle de redirect validando URL a cada salto.
+- limite de 50MB em download externo.
 
-## P0 - Critico
-1. **SSRF ainda contornavel via `localhost`**
-- Evidencia: `_validate_external_url` permite hostnames nao-IP (`comfyui_api.py:855-866`), e teste local confirmou `ALLOW http://localhost:8188`.
-- Risco: atacante pode forcar requests internas no container (inclusive serviços locais).
-- Nota de referencia: este ponto e inferencia de seguranca da implementacao atual; os exemplos oficiais focam em arquitetura e nao cobrem hardening SSRF em profundidade.
-- Impacto SaaS: alto (seguranca de infra).
+2. **Cancelamento forte com API da Modal**
+- No codigo: `comfyui_api.py:847`, `comfyui_api.py:858`, `comfyui_api.py:1124`.
+- O que mudou:
+- persiste `function_call_id` no job ao `spawn`.
+- `DELETE /v1/jobs/{id}` chama `modal.FunctionCall.from_id(call_id).cancel()`.
+- worker continua com cancelamento cooperativo lendo status do volume.
 
-2. **Cancelamento nao interrompe explicitamente o prompt do ComfyUI**
-- Evidencia: cancel seta status no volume (`comfyui_api.py:967-971`), worker detecta e faz `return` (`comfyui_api.py:520-523`), mas nao chama `/interrupt` nem `/queue/cancel` no ComfyUI local.
-- Risco: job pode continuar rodando internamente por algum tempo, consumindo GPU/custo.
-- Impacto SaaS: alto (custo + previsibilidade).
+3. **Ownership e isolamento por tenant obrigatorios**
+- No codigo: `comfyui_api.py:254`, `comfyui_api.py:792`, `comfyui_api.py:809`, `comfyui_api.py:1008`, `comfyui_api.py:1062`.
+- O que mudou:
+- `user_id` virou obrigatorio no payload.
+- header `X-User-ID` obrigatorio.
+- `GET /v1/jobs/{id}` e `DELETE` validam ownership.
+- `GET /v1/jobs` retorna apenas jobs do caller.
 
-## P1 - Alto
-3. **Isolamento multi-tenant ainda fraco (user_id e filtro sao opcionais)**
-- Evidencia: `user_id` opcional (`comfyui_api.py:237`), listagem global existe e filtra apenas se caller passar `user_id` (`comfyui_api.py:915-947`).
-- Risco: com chave vazada/uso interno incorreto, metadados de todos os clientes ficam expostos.
+4. **Quota de capacidade para conter custo idiota**
+- No codigo: `comfyui_api.py:54`, `comfyui_api.py:55`, `comfyui_api.py:985`.
+- O que mudou:
+- limite global de jobs ativos (`MAX_ACTIVE_JOBS_GLOBAL`).
+- limite de jobs ativos por usuario (`MAX_ACTIVE_JOBS_PER_USER`).
 
-4. **Timeout de fila agressivo (2 min) com side effect em rotas de leitura**
-- Evidencia: `QUEUED_TIMEOUT_SECONDS = 120` (`comfyui_api.py:821`) e transicao para failed ocorre dentro de GET/list (`comfyui_api.py:870-883`, `comfyui_api.py:895`, `comfyui_api.py:932`).
-- Risco: falso-fail em picos de alocacao GPU; semantica de leitura alterando estado.
+5. **Timeout de fila saiu de GET/list (sem side effect em leitura)**
+- No codigo: `comfyui_api.py:56`, `comfyui_api.py:1189`.
+- O que mudou:
+- expiracao de queued foi movida para tarefa agendada (`fail_stale_queued_jobs`).
 
-5. **Sem rate limit / quota por cliente**
-- Evidencia: nao ha limiter nos endpoints FastAPI.
-- Risco: burst/abuso derruba UX e aumenta custo.
+6. **Reemissao de URL assinada no GET de job**
+- No codigo: `comfyui_api.py:57`, `comfyui_api.py:1013`, `comfyui_api.py:1056`.
+- O que mudou:
+- outputs com `r2_key` recebem URL nova no `GET /v1/jobs/{id}`.
 
-6. **Build ainda parcialmente nao deterministico (drift de dependencias)**
-- Evidencia: `torch`, `torchvision`, `torchaudio` sem versao fixa em `comfyui_api.py:152-157`.
-- Comparativo: exemplos de `02_building_containers` e `image-to-video` priorizam pinning explicito de versoes para reproduzibilidade.
-- Risco: comportamento muda entre deploys sem alteracao de codigo.
+7. **Pinning da stack torch para build reproducivel**
+- No codigo: `comfyui_api.py:171`.
+- O que mudou:
+- `torch==2.8.0`, `torchvision==0.23.0`, `torchaudio==2.8.0`.
 
-7. **Persistencia de payload grande no volume de jobs**
-- Evidencia: request aceita ate 10 midias de 50MB e salva JSON com `media` no volume (`comfyui_api.py:776-813`), com fallback base64 para output (`comfyui_api.py:657-663`).
-- Risco: I/O pesado e latencia sob carga.
+8. **Escala/custo com knobs explicitos**
+- No codigo: `comfyui_api.py:48`, `comfyui_api.py:341`.
+- O que mudou:
+- `max/min/buffer/scaledown` parametrizados por env var.
 
-## P2 - Medio
-8. **README promete comportamento que o codigo nao implementa**
-- Evidencia: README diz que `GET /v1/jobs/{job_id}` regenera URL expirada (`README.md:375`), mas o codigo apenas retorna o que esta salvo em `outputs` (`comfyui_api.py:909`).
+## Comparativo direto com exemplos oficiais
+1. **`06_gpu_and_ml/comfyui/comfyapp.py`**
+- No exemplo, eles fazem servidor ComfyUI em `@app.cls` e health guard com `modal.experimental.stop_fetching_inputs`.
+- No seu codigo, isso esta alinhado (`comfyui_api.py:387`, `comfyui_api.py:370`) e com API de producao por cima.
 
-9. **Testes automatizados nao estao fechados para CI**
-- Evidencia: `python -m py_compile` OK; imports OK; mas suite `pytest` nao esta preparada no venv atual (nao ha `pytest` instalado no `.venv`).
+2. **`06_gpu_and_ml/comfyui/memory_snapshot/memory_snapshot_example.py`**
+- No exemplo, eles fazem `@modal.enter(snap=True)` + `@modal.enter(snap=False)` e reativam CUDA com `/cuda/set_device`.
+- No seu codigo, esta alinhado (`comfyui_api.py:353`, `comfyui_api.py:336`).
 
-## Comparativo ampliado (pastas solicitadas)
-1. **`06_gpu_and_ml/comfyui`**
-- No exemplo `comfyui/comfyapp.py`, eles fazem API simples com `@modal.fastapi_endpoint` e estado minimo de execucao; voce esta fazendo API completa com estado persistido em Volume (`comfyui_api.py:796-813`, `comfyui_api.py:915-947`).
-- No exemplo `comfyui/comfyapp.py`, eles fazem health guard com `modal.experimental.stop_fetching_inputs`; voce tambem esta fazendo isso em `comfyui_api.py:370` (alinhado).
+3. **`06_gpu_and_ml/image-to-video/image_to_video.py`**
+- No exemplo, eles pinam dependencias e usam revisao fixa de modelo.
+- No seu codigo, o pinning da stack torch foi alinhado (`comfyui_api.py:171`), mas ainda faltam revisoes SHA nos modelos Hugging Face listados em `MODELS`.
 
-2. **`06_gpu_and_ml/comfyui/memory_snapshot`**
-- No exemplo `memory_snapshot_example.py`, eles fazem snapshot em `snap=True` e restauram CUDA em `snap=False`; voce esta fazendo o mesmo em `comfyui_api.py:336-359`.
-- No exemplo `memory_snapshot_example.py`, eles alertam que custom node pode quebrar snapshot; voce esta fazendo com helper local (`memory_snapshot_helper`), entao precisa manter teste de cold start a cada alteracao de node/model.
+4. **`09_job_queues/web_job_queue_wrapper.py` + `doc_ocr_webapp.py` + `08_advanced/poll_delayed_result.py`**
+- Nos exemplos, o padrao e `spawn` + polling com `FunctionCall.from_id(...).get(timeout=0)`.
+- No seu codigo, isso foi levado para um fluxo de job persistido e agora com cancelamento explicito via `FunctionCall.cancel()` (`comfyui_api.py:1127`).
 
-3. **`06_gpu_and_ml/image-to-video`**
-- No exemplo `image_to_video.py`, eles fazem pinning estrito de versoes e revision SHA de modelo; voce esta fazendo pinning parcial e deixando `torch/torchvision/torchaudio` sem versao fixa (`comfyui_api.py:152-157`).
-- No exemplo `image_to_video.py`, eles fazem retorno de arquivo/volume sem base64 gigante; voce esta fazendo URL assinada em R2 (bom) mas com fallback base64 (`comfyui_api.py:657-663`).
+5. **`07_web_endpoints/basic_web.py`**
+- No exemplo, endpoint sensivel pode usar `requires_proxy_auth=True`.
+- No seu codigo, auth principal e Bearer + `X-User-ID`; proxy auth do Modal ainda e opcional e recomendado para camada extra.
 
-4. **`02_building_containers`**
-- No exemplo `install_cuda.py`, eles fazem imagem explicitando stack CUDA quando necessario; voce esta fazendo build GPU funcional, mas com menor controle de reproducao por dependencia sem pinning total.
-- No exemplo `02_building_containers`, eles fazem foco em previsibilidade de imagem; voce esta fazendo imagem robusta, mas ainda com risco de drift entre deploys por versoes abertas.
+6. **`03_scaling_out/cls_with_options.py` + `dynamic_batching.py`**
+- Nos exemplos, foco em ajuste dinamico de escala.
+- No seu codigo, voce manteve `max_inputs=1` (coerente para ComfyUI pesado) e adicionou knobs de capacidade/latencia por env var.
 
-5. **`09_job_queues`**
-- No exemplo `web_job_queue_wrapper.py`, eles fazem submit async com `spawn` e polling por `request_id`; voce esta fazendo `spawn` com job persistido em JSON (`comfyui_api.py:816`), que funciona, mas depende de consistencia de volume.
-- No exemplo `doc_ocr_jobs.py`, eles fazem retries e padrao de fila escalavel para tarefas longas; voce esta fazendo timeout de fila de 120s (`comfyui_api.py:821`), que pode ser curto para picos de GPU.
+## Cancelamento: como os exemplos fazem
+- Nos exemplos de fila citados acima, **nao existe endpoint HTTP de cancelamento**.
+- O padrao oficial mostrado e submit async + polling.
+- Para cancelamento, a base confiavel vem da API do SDK Modal:
+- validado localmente no seu `.venv`: `modal 1.3.3`, `FunctionCall.cancel(self, terminate_containers: bool = False)`.
+- Seu codigo agora usa esse caminho oficialmente suportado.
 
-## Cancelamento nos exemplos oficiais
-- Nos exemplos que voce pediu (`09_job_queues/web_job_queue_wrapper.py` e `09_job_queues/doc_ocr_webapp.py`), o padrao oficial e **spawn + polling de status/resultado**; nao existe endpoint de cancelamento explicito nesses exemplos.
-- Em `08_advanced/poll_delayed_result.py` (outro exemplo oficial do repo), o padrao continua sendo **spawn + poll com timeout=0** para saber se terminou, sem cancelamento HTTP exposto.
-- Na documentacao oficial consultada via Context7 (`guide/webhook-timeouts` e `guide/trigger-deployed-functions`), o fluxo recomendado mostrado e o mesmo: **aceitar job, retornar `call_id`, e fazer polling**.
-- A mesma base de docs via Context7 tambem indica existencia de `modal.FunctionCall.cancel` (changelog 1.1.3 cita esse metodo), mas nao encontrei nos exemplos acima um fluxo completo de endpoint de cancelamento usando esse metodo.
-- Comparacao direta: voce esta indo alem dos exemplos ao implementar `DELETE /v1/jobs/{job_id}` e sinalizacao cooperativa de cancelamento (`comfyui_api.py:950-973` e `comfyui_api.py:515-523`), o que e positivo para SaaS. O gap restante e tornar esse cancelamento mais forte no ComfyUI (interrupt/cancel da fila local).
+## Estado atual de prontidao para 2k+ DAU
+## Ja esta bom
+1. Separacao API (CPU) + worker GPU com autoscaling.
+2. Snapshot de memoria para reduzir cold start.
+3. Jobs assincronos com progresso e polling.
+4. Outputs em R2 com URL assinada renovavel.
+5. Cancelamento funcional de job via API Modal.
+6. Isolamento basico de tenant no proprio backend.
 
-6. **`07_web_endpoints`**
-- No exemplo `basic_web.py`, eles fazem opcao de `requires_proxy_auth=True` para endpoints sensiveis; voce esta fazendo auth bearer propria (`comfyui_api.py:761-768`), mas sem segunda camada de proxy auth do Modal.
-- No exemplo `07_web_endpoints`, eles fazem padrao claro de API publica simples; voce esta fazendo API de producao com mais risco operacional, entao precisa rate-limit e quotas no gateway.
+## Ainda precisa para producao publica robusta
+1. **Rate limit distribuido por segundo/minuto no gateway** (Cloudflare/API Gateway/Nginx), nao apenas quota de jobs ativos.
+2. **Observabilidade de producao**: metricas (fila, tempo medio, erro, cancel), alertas e dashboards.
+3. **Teste de carga real** com perfil do seu SaaS (burst e pico) para calibrar `MAX_ACTIVE_*`, `GPU_MAX_CONTAINERS`, `QUEUED_TIMEOUT_SECONDS`.
+4. **Revisao SHA de modelos** (quando aplicavel) para previsibilidade total de deploy.
 
-7. **`03_scaling_out`**
-- No exemplo `cls_with_options.py`, eles fazem ajuste dinamico de recursos em runtime com `with_options`; voce esta fazendo configuracao fixa (`max_containers=10`, `max_inputs=1` em `comfyui_api.py:324-327`).
-- No exemplo `dynamic_batching.py`, eles fazem batching para throughput; voce esta fazendo processamento serial por container (adequado para ComfyUI pesado), mas pode combinar com `min_containers`/`buffer_containers` para reduzir fila/cold start.
+## APIs prontas para seu site (agora)
+1. `POST /v1/jobs` (obrigatorio `Authorization` + `X-User-ID`, e `user_id` no body igual ao header)
+2. `GET /v1/jobs/{job_id}`
+3. `GET /v1/jobs`
+4. `DELETE /v1/jobs/{job_id}`
+5. `GET /health`
 
-## Pontos muito bons (alinhados ao “santo graal” da Modal)
-1. **Memory snapshot com helper dedicado**
-- `@modal.enter(snap=True/snap=False)` em `comfyui_api.py:336-359`, usando `memory_snapshot_helper`.
+## README atualizado
+- Contrato novo de tenant/header: `README.md:259`.
+- Timeout de fila por tarefa agendada: `README.md:335`.
+- Reemissao de URL assinada: `README.md:385`.
+- Controle de custo por quota/buffer: `README.md:350`.
 
-2. **Health check com retirada do pool**
-- `modal.experimental.stop_fetching_inputs()` em `comfyui_api.py:370`.
+## Validacao executada nesta revisao
+1. `python -m py_compile comfyui_api.py test_api.py test_run.py` -> OK.
+2. Smoke de SSRF: `localhost` e `127.0.0.1` bloqueados; `https://example.com` permitido -> OK.
+3. Smoke de fetch externo seguro: download de payload pequeno publico (`httpbin /bytes/16`) com validacao -> OK.
+4. SDK Modal no venv: `modal 1.3.3` com `FunctionCall.cancel(self, terminate_containers: bool = False)` -> OK.
+5. E2E HTTP real no endpoint Modal:
+- `GET /health` -> 200
+- `POST /v1/jobs` com chave invalida -> 401
+- `POST /v1/jobs` valido -> 200 (job criado)
+- ownership check em `GET /v1/jobs/{id}` com outro `X-User-ID` -> 404
+- `DELETE /v1/jobs/{id}` -> 200
+- polling final -> `cancelled`
+6. Execucao direta das funcoes de manutencao:
+- `modal run comfyui_api.py::fail_stale_queued_jobs` -> OK
+- `modal run comfyui_api.py::cleanup_old_jobs` -> OK
 
-3. **Separacao API leve (CPU) e worker GPU**
-- arquitetura correta para escalar e proteger latencia.
+## Observacao sobre .env
+- Para Modal em producao, `.env` e `.env.example` ajudam localmente, mas o runtime usa `modal secret`.
+- Segredos necessarios: `comfyui-api-secret` (API_KEY) e `comfyui-r2` (R2_*).
 
-4. **Outputs em R2 com URL assinada**
-- upload + presign em `comfyui_api.py:646-653`.
-
-5. **Auth Bearer presente em todas as rotas de negocio**
-- `verify_api_key` + `Depends` nos endpoints.
-
-## APIs para seu site: o que ja pode liberar
-## Pode liberar agora (via backend seu)
-- `POST /v1/jobs`
-- `GET /v1/jobs/{job_id}`
-- `DELETE /v1/jobs/{job_id}`
-- `GET /health`
-
-Condicao: manter chamadas **somente pelo seu backend** (nunca direto do front), com controle de usuario/plano no seu sistema.
-
-## Nao liberar diretamente para cliente final ainda
-- `GET /v1/jobs` sem gate adicional por tenant/escopo.
-
-## Checklist minimo antes de “producao real”
-1. Corrigir SSRF: bloquear `localhost`, resolver DNS e bloquear IP privado apos resolucao, bloquear redirect para rede privada.
-2. Implementar cancelamento forte no worker: chamar `/interrupt` + `/queue/cancel` quando status virar `cancelled`.
-3. Tornar `user_id` obrigatorio (ou claim do token) e validar ownership em `GET /v1/jobs/{id}`.
-4. Adicionar rate limit/quota por cliente (API gateway ou middleware).
-5. Ajustar timeout de fila (2 min tende a ser curto em picos).
-6. Pinning completo de dependencias da imagem (torch stack incluso).
-7. Opcional forte: endpoint para reemitir URL assinada de outputs expirados.
-
-## Como resolver o checklist (baseado em exemplos + docs)
-1. **SSRF**
-- O que os exemplos/docs mostram: os exemplos oficiais focam no padrao de API e fila, nao trazem middleware pronto de SSRF.
-- O que esta comprovado no seu codigo: `_validate_external_url` bloqueia IP privado literal, mas aceita hostname nao resolvido (`comfyui_api.py:855-866`).
-- O que fazer de forma objetiva:
-  - bloquear `localhost` explicitamente;
-  - resolver DNS do hostname e aplicar o mesmo bloqueio de IP privado/loopback/link-local nos IPs resolvidos;
-  - bloquear redirect que leve para rede privada.
-
-2. **Cancelamento forte**
-- O que os exemplos oficiais fazem:
-  - `09_job_queues/web_job_queue_wrapper.py`: `spawn` + polling por `request_id`;
-  - `09_job_queues/doc_ocr_webapp.py`: `spawn` + polling;
-  - `08_advanced/poll_delayed_result.py`: `spawn` + polling `get(timeout=0)`.
-- Ou seja: os exemplos **nao** implementam endpoint de cancelamento HTTP.
-- O que os docs/sdks confirmam:
-  - `FunctionCall.from_id(...)` e polling sao padrao nos exemplos/docs;
-  - no SDK local validado aqui, `FunctionCall.cancel(self, terminate_containers: bool = False)` existe e a docstring informa cancelamento do call.
-- O que fazer de forma objetiva:
-  - salvar `function_call_id` quando fizer `spawn`;
-  - no `DELETE /v1/jobs/{job_id}`, carregar esse ID e chamar `modal.FunctionCall.from_id(id).cancel()`;
-  - manter sua parada cooperativa atual no worker (`comfyui_api.py:515-523`) como fallback.
-
-3. **`user_id` obrigatorio + ownership**
-- O que os exemplos fazem: nao implementam multi-tenant completo (isso fica para a aplicacao).
-- O que fazer de forma objetiva:
-  - tornar `user_id` obrigatorio no payload de criacao;
-  - em `GET /v1/jobs/{id}`, negar acesso quando `job.user_id != caller.user_id`;
-  - em `GET /v1/jobs`, exigir filtro por `user_id` do caller.
-
-4. **Rate limit / quota**
-- O que os exemplos/docs mostram:
-  - `07_web_endpoints/basic_web.py` mostra `requires_proxy_auth=True` como camada de protecao de endpoint;
-  - docs de web endpoints explicam proxy auth e autenticacao no proprio app.
-- O que fazer de forma objetiva:
-  - para endpoint backend-to-backend, considerar `requires_proxy_auth=True` + seu bearer interno;
-  - aplicar quota/rate limit no gateway (por tenant/chave).
-
-5. **Timeout de fila**
-- O que os exemplos de fila fazem: `spawn` + polling de status, sem mutacao de estado em rota de leitura.
-- O que esta comprovado no seu codigo: GET/list pode alterar estado para failed via `_check_queued_timeout` (`comfyui_api.py:870-883`, `comfyui_api.py:895`, `comfyui_api.py:932`).
-- O que fazer de forma objetiva:
-  - mover expiracao de fila para job supervisor/cron (fora do GET);
-  - revisar SLA de timeout (120s costuma ser curto em disputa de GPU).
-
-6. **Reemitir URL assinada**
-- O que esta comprovado no seu codigo: voce salva `r2_key` por output (`comfyui_api.py:653`) e ja tem `generate_r2_url(...)` (`comfyui_api.py:292-309`).
-- O que fazer de forma objetiva:
-  - no GET de job `completed`, regenerar URL assinada para cada output com `r2_key`;
-  - opcionalmente persistir a nova URL no job.
-
-7. **Pinning de dependencias**
-- O que os exemplos mostram:
-  - `06_gpu_and_ml/image-to-video/image_to_video.py` usa versoes pinadas e revision SHA de modelo;
-  - `02_building_containers` reforca reproducibilidade de imagem.
-- O que esta comprovado no seu codigo: `torch/torchvision/torchaudio` sem versao fixa (`comfyui_api.py:152-157`).
-- O que fazer de forma objetiva:
-  - fixar versoes da stack torch/cuda e libs criticas no `gpu_image`;
-  - registrar revisao dos modelos (quando aplicavel) para deploy deterministico.
-
-## Conclusao
-Seu projeto avancou muito e ja esta numa base solida para integrar com seu site em **beta fechado**. Para considerar “bom o suficiente” em **producao publica com 2 mil ativos/dia**, faltam principalmente os 2 P0 (SSRF localhost + cancelamento forte) e isolamento tenant mais rigido.
-
-## Referencias
-- https://github.com/modal-labs/modal-examples/tree/main/06_gpu_and_ml
+## Referencias usadas
 - https://github.com/modal-labs/modal-examples/tree/main/06_gpu_and_ml/comfyui
-- https://github.com/modal-labs/modal-examples/tree/main/06_gpu_and_ml/image-to-video
 - https://github.com/modal-labs/modal-examples/blob/main/06_gpu_and_ml/comfyui/comfyapp.py
 - https://github.com/modal-labs/modal-examples/blob/main/06_gpu_and_ml/comfyui/memory_snapshot/memory_snapshot_example.py
-- https://github.com/modal-labs/modal-examples/blob/main/06_gpu_and_ml/gpu_packing.py
-- https://github.com/modal-labs/modal-examples/blob/main/06_gpu_and_ml/gpu_fallbacks.py
-- https://github.com/modal-labs/modal-examples/tree/main/02_building_containers
+- https://github.com/modal-labs/modal-examples/tree/main/06_gpu_and_ml/image-to-video
+- https://github.com/modal-labs/modal-examples/blob/main/06_gpu_and_ml/image-to-video/image_to_video.py
 - https://github.com/modal-labs/modal-examples/tree/main/09_job_queues
+- https://github.com/modal-labs/modal-examples/blob/main/09_job_queues/web_job_queue_wrapper.py
+- https://github.com/modal-labs/modal-examples/blob/main/09_job_queues/doc_ocr_jobs.py
+- https://github.com/modal-labs/modal-examples/blob/main/09_job_queues/doc_ocr_webapp.py
+- https://github.com/modal-labs/modal-examples/blob/main/08_advanced/poll_delayed_result.py
 - https://github.com/modal-labs/modal-examples/tree/main/07_web_endpoints
+- https://github.com/modal-labs/modal-examples/blob/main/07_web_endpoints/basic_web.py
 - https://github.com/modal-labs/modal-examples/tree/main/03_scaling_out
+- Context7 (`/websites/modal`): guides `job-queue`, `webhook-timeouts`, `volumes`, `scale`, examples `basic_web`/`doc_ocr_webapp`.
+
+## Validacao real de inferencia (2 prompts)
+Data: 19/02/2026
+
+Base usada:
+- endpoint deploy estavel: `https://cezarsaint--comfyui-saas-api.modal.run`
+- workflow: `workflows/sdxl_simple_exampleV2.json` (usa `ChenkinNoob-XL-V0.2.safetensors`)
+- saida local: `tests_outputs/`
+- R2: validado por `r2_key` e download via URL assinada
+
+Execucoes:
+1. `job_id=2b0046a1-a56f-4a3e-9d16-a850345187be`
+- status final: `completed`
+- tempo fim-a-fim: `19.2s`
+- outputs: `1`
+- `r2_key`: `outputs/2b0046a1-a56f-4a3e-9d16-a850345187be/ComfyUI_00006_.png`
+- arquivo local: `tests_outputs/run1_2b0046a1_ComfyUI_00006_.png`
+
+2. `job_id=50a2cf69-ffce-4a9c-9b90-584e547aa547`
+- status final: `completed`
+- tempo fim-a-fim: `24.4s`
+- outputs: `1`
+- `r2_key`: `outputs/50a2cf69-ffce-4a9c-9b90-584e547aa547/ComfyUI_00007_.png`
+- arquivo local: `tests_outputs/run2_50a2cf69_ComfyUI_00007_.png`
+
+Comparacao:
+- run1: `19.2s`
+- run2: `24.4s`
+- delta: `+5.2s` no run2
+
+## Confirmacao de modelo no app/volume
+- `modal run comfyui_api.py::verify_setup` retornou:
+  - `Models: 1 files, 6.6 GB total`
+  - `Setup OK!`
+
+## Nuances de producao (a partir dos exemplos oficiais citados)
+1. `gpu_fallbacks.py`:
+- no exemplo eles usam `gpu=[\"h100\", \"a100\", \"any\"]` para reduzir risco de fila por SKU indisponivel.
+- no seu codigo foi aplicado fallback por env (`GPU_CONFIG`).
+
+2. `gpu_snapshot.py`:
+- no exemplo eles destacam que snapshot GPU e para app deployado e exige testes cuidadosos em producao.
+- seu fluxo com snapshot continua valido, mas o ganho depende de deploy estavel e aquecimento adequado.
+
+3. `long-training.py`:
+- no exemplo eles reforcam retries e reentrada com estado persistido para workloads longos.
+- no seu caso de inferencia, o paralelo pratico e tratar falha de fila (`queued timeout`) com retry no backend chamador.
+
+4. `gpu_packing.py`:
+- no exemplo eles aumentam throughput por GPU com concorrencia e pool de modelos.
+- para ComfyUI pesado, packing agressivo tende a bater VRAM; aqui faz mais sentido controlar `max_inputs=1`, usar fallback de GPU e warm pool.

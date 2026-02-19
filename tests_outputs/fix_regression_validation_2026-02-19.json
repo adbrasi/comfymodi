@@ -1,0 +1,100 @@
+{
+  "cancel_immediate": [
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    },
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    },
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    }
+  ],
+  "cancel_running": [
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    },
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    },
+    {
+      "ok": false,
+      "phase": "create",
+      "status": 500,
+      "body": "Internal Server Error"
+    }
+  ],
+  "burst_limit": {
+    "ok": false,
+    "accepted": 0,
+    "rejected_429": 0,
+    "other_errors": 8,
+    "submissions": [
+      {
+        "status": 500,
+        "latency": 1.073,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 1.672,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 2.27,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 2.871,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 3.558,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 4.033,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 4.18,
+        "job_id": null,
+        "body": "Internal Server Error"
+      },
+      {
+        "status": 500,
+        "latency": 4.251,
+        "job_id": null,
+        "body": "Internal Server Error"
+      }
+    ]
+  },
+  "timestamp": "2026-02-19T22:06:14.751126+00:00",
+  "all_ok": false
+}

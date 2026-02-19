@@ -1,0 +1,311 @@
+{
+  "cancel_immediate": [
+    {
+      "ok": true,
+      "job_id": "bf870910-b87d-4147-bafc-a018d09cfb12",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": true,
+        "status": "cancelled",
+        "elapsed": 1.03,
+        "data": {
+          "job_id": "bf870910-b87d-4147-bafc-a018d09cfb12",
+          "status": "cancelled",
+          "created_at": "2026-02-19T22:09:40.055419+00:00",
+          "started_at": "2026-02-19T22:09:52.355849+00:00",
+          "completed_at": "2026-02-19T22:09:55.327177+00:00",
+          "user_id": "fix2_cancel_immediate_59727b",
+          "progress": 0,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 0,
+          "nodes_total": 7,
+          "outputs": [],
+          "error": "Cancelled by user",
+          "logs": [
+            "[22:09:53] Job started",
+            "[22:09:53] Override node=4 field=ckpt_name",
+            "[22:09:53] Override node=6 field=text",
+            "[22:09:53] Override node=53 field=seed",
+            "[22:09:53] Override node=53 field=steps",
+            "[22:09:53] Override node=5 field=width",
+            "[22:09:53] Override node=5 field=height",
+            "[22:09:53] Prompt submitted: 3f3c7257-a45a-4abf-bc9f-e6c9623fcd2c",
+            "[22:09:53] Execution started — 0 nodes planned"
+          ]
+        }
+      }
+    },
+    {
+      "ok": true,
+      "job_id": "099155af-8373-4425-abf6-36005801b5f1",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": true,
+        "status": "cancelled",
+        "elapsed": 12.45,
+        "data": {
+          "job_id": "099155af-8373-4425-abf6-36005801b5f1",
+          "status": "cancelled",
+          "created_at": "2026-02-19T22:09:58.885834+00:00",
+          "started_at": null,
+          "completed_at": "2026-02-19T22:10:04.451564+00:00",
+          "user_id": "fix2_cancel_immediate_2b2890",
+          "progress": 0,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 0,
+          "nodes_total": 0,
+          "outputs": [],
+          "error": "Cancelled by user",
+          "logs": []
+        }
+      }
+    },
+    {
+      "ok": true,
+      "job_id": "cffd4cb8-fb75-4ed3-9187-c53cc4c88a69",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": true,
+        "status": "cancelled",
+        "elapsed": 3.89,
+        "data": {
+          "job_id": "cffd4cb8-fb75-4ed3-9187-c53cc4c88a69",
+          "status": "cancelled",
+          "created_at": "2026-02-19T22:10:20.049685+00:00",
+          "started_at": "2026-02-19T22:10:28.283901+00:00",
+          "completed_at": "2026-02-19T22:10:34.344969+00:00",
+          "user_id": "fix2_cancel_immediate_83c5be",
+          "progress": 4,
+          "current_step": 45,
+          "total_steps": 110,
+          "current_node": "53",
+          "nodes_done": 0,
+          "nodes_total": 7,
+          "outputs": [],
+          "error": "Cancelled by user",
+          "logs": [
+            "[22:10:29] Job started",
+            "[22:10:29] Override node=4 field=ckpt_name",
+            "[22:10:29] Override node=6 field=text",
+            "[22:10:29] Override node=53 field=seed",
+            "[22:10:29] Override node=53 field=steps",
+            "[22:10:29] Override node=5 field=width",
+            "[22:10:29] Override node=5 field=height",
+            "[22:10:29] Prompt submitted: 89e4718b-02d0-4a26-b7bd-8c3bb134d9ab",
+            "[22:10:29] Execution started — 0 nodes planned",
+            "[22:10:29] Executing node 53 (KSampler)"
+          ]
+        }
+      }
+    }
+  ],
+  "cancel_running": [
+    {
+      "ok": false,
+      "job_id": "08377caa-ae7e-40de-adb6-3462e09b257e",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": false,
+        "error": "timeout",
+        "elapsed": 241.98,
+        "last": {
+          "job_id": "08377caa-ae7e-40de-adb6-3462e09b257e",
+          "status": "running",
+          "created_at": "2026-02-19T22:10:41.066772+00:00",
+          "started_at": "2026-02-19T22:10:49.754719+00:00",
+          "completed_at": null,
+          "user_id": "fix2_cancel_running_f15668",
+          "progress": 0,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 0,
+          "nodes_total": 7,
+          "outputs": [],
+          "error": null,
+          "logs": [
+            "[22:10:51] Job started",
+            "[22:10:51] Override node=4 field=ckpt_name",
+            "[22:10:51] Override node=6 field=text",
+            "[22:10:51] Override node=53 field=seed",
+            "[22:10:51] Override node=53 field=steps",
+            "[22:10:51] Override node=5 field=width",
+            "[22:10:51] Override node=5 field=height",
+            "[22:10:51] Prompt submitted: 68516986-455e-4c60-88ee-da549040a293",
+            "[22:10:51] Execution started — 0 nodes planned"
+          ]
+        }
+      }
+    },
+    {
+      "ok": false,
+      "job_id": "cd15f63d-d528-4c9a-96a4-7d5cfc0c343a",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": true,
+        "status": "completed",
+        "elapsed": 17.08,
+        "data": {
+          "job_id": "cd15f63d-d528-4c9a-96a4-7d5cfc0c343a",
+          "status": "completed",
+          "created_at": "2026-02-19T22:14:58.629767+00:00",
+          "started_at": "2026-02-19T22:15:11.225560+00:00",
+          "completed_at": "2026-02-19T22:15:28.242418+00:00",
+          "user_id": "fix2_cancel_running_a7e3f5",
+          "progress": 100,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 1,
+          "nodes_total": 7,
+          "outputs": [
+            {
+              "filename": "ComfyUI_00018_.png",
+              "type": "image",
+              "size_bytes": 405207,
+              "url": "https://287c1977befea62f2052777a86ed6588.r2.cloudflarestorage.com/comfyui-outputs/outputs/cd15f63d-d528-4c9a-96a4-7d5cfc0c343a/ComfyUI_00018_.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=132a7bb0d0c9ce413a220f19d0ee3f11%2F20260219%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260219T221548Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=0a955715900ee54824ded467dc3a71bcc4e8d69f7d76168265643968b11dc74d",
+              "r2_key": "outputs/cd15f63d-d528-4c9a-96a4-7d5cfc0c343a/ComfyUI_00018_.png"
+            }
+          ],
+          "error": null,
+          "logs": [
+            "[22:15:13] Job started",
+            "[22:15:13] Override node=4 field=ckpt_name",
+            "[22:15:13] Override node=6 field=text",
+            "[22:15:13] Override node=53 field=seed",
+            "[22:15:13] Override node=53 field=steps",
+            "[22:15:13] Override node=5 field=width",
+            "[22:15:13] Override node=5 field=height",
+            "[22:15:13] Prompt submitted: aeeee2c6-744d-46a0-9694-77358996135c",
+            "[22:15:13] Execution started — 0 nodes planned",
+            "[22:15:14] Executing node 53 (KSampler)",
+            "[22:15:22] Executing node 17 (VAEDecode)",
+            "[22:15:24] Executing node 19 (SaveImage)",
+            "[22:15:25] Node 19 completed (1/7)",
+            "[22:15:27] All nodes executed — workflow complete",
+            "[22:15:27] WebSocket closed",
+            "[22:15:27] Collecting outputs ...",
+            "[22:15:28] Uploaded ComfyUI_00018_.png to R2 (395KB)",
+            "[22:15:28] Completed! 1 output(s) | elapsed: 17.0s"
+          ]
+        }
+      }
+    },
+    {
+      "ok": false,
+      "job_id": "05a0e250-092c-4257-b545-8a40957862a3",
+      "cancel_http": 200,
+      "terminal": {
+        "ok": true,
+        "status": "completed",
+        "elapsed": 16.62,
+        "data": {
+          "job_id": "05a0e250-092c-4257-b545-8a40957862a3",
+          "status": "completed",
+          "created_at": "2026-02-19T22:15:49.476792+00:00",
+          "started_at": "2026-02-19T22:15:59.046449+00:00",
+          "completed_at": "2026-02-19T22:16:15.761671+00:00",
+          "user_id": "fix2_cancel_running_45e7ee",
+          "progress": 100,
+          "current_step": 0,
+          "total_steps": 0,
+          "current_node": null,
+          "nodes_done": 1,
+          "nodes_total": 7,
+          "outputs": [
+            {
+              "filename": "ComfyUI_00019_.png",
+              "type": "image",
+              "size_bytes": 377583,
+              "url": "https://287c1977befea62f2052777a86ed6588.r2.cloudflarestorage.com/comfyui-outputs/outputs/05a0e250-092c-4257-b545-8a40957862a3/ComfyUI_00019_.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=132a7bb0d0c9ce413a220f19d0ee3f11%2F20260219%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260219T221622Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=cb98afc8f6317474d7369d0f43de8ae7f92a7e0f729143b4ec40500d0a972af7",
+              "r2_key": "outputs/05a0e250-092c-4257-b545-8a40957862a3/ComfyUI_00019_.png"
+            }
+          ],
+          "error": null,
+          "logs": [
+            "[22:15:59] Job started",
+            "[22:15:59] Override node=4 field=ckpt_name",
+            "[22:15:59] Override node=6 field=text",
+            "[22:15:59] Override node=53 field=seed",
+            "[22:15:59] Override node=53 field=steps",
+            "[22:15:59] Override node=5 field=width",
+            "[22:15:59] Override node=5 field=height",
+            "[22:15:59] Prompt submitted: d64c145e-5b6f-4266-b1de-0b5d2d04b4ff",
+            "[22:15:59] Execution started — 0 nodes planned",
+            "[22:16:00] Executing node 53 (KSampler)",
+            "[22:16:12] Executing node 17 (VAEDecode)",
+            "[22:16:13] Executing node 19 (SaveImage)",
+            "[22:16:14] Node 19 completed (1/7)",
+            "[22:16:15] All nodes executed — workflow complete",
+            "[22:16:15] WebSocket closed",
+            "[22:16:15] Collecting outputs ...",
+            "[22:16:15] Uploaded ComfyUI_00019_.png to R2 (368KB)",
+            "[22:16:15] Completed! 1 output(s) | elapsed: 16.7s"
+          ]
+        }
+      }
+    }
+  ],
+  "burst_limit": {
+    "ok": false,
+    "accepted": 4,
+    "rejected_429": 0,
+    "other_errors": 4,
+    "submissions": [
+      {
+        "status": 200,
+        "latency": 7.906,
+        "job_id": "c8cf3c6d-c09b-4ddb-a100-ee65113bdeb9",
+        "body": "{\"job_id\":\"c8cf3c6d-c09b-4ddb-a100-ee65113bdeb9\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:16:23.150065+00:00\",\"user_id\":\"fix2_burst_935b63\"}"
+      },
+      {
+        "status": 503,
+        "latency": 9.111,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "latency": 9.124,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "latency": 10.537,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 503,
+        "latency": 10.763,
+        "job_id": null,
+        "body": "{\"detail\":\"Quota lock busy. Retry in a few seconds.\"}"
+      },
+      {
+        "status": 200,
+        "latency": 13.248,
+        "job_id": "79b54d61-2143-452e-9357-6e3d36ad28c2",
+        "body": "{\"job_id\":\"79b54d61-2143-452e-9357-6e3d36ad28c2\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:16:30.135703+00:00\",\"user_id\":\"fix2_burst_935b63\"}"
+      },
+      {
+        "status": 200,
+        "latency": 13.538,
+        "job_id": "c6b5426d-19cb-48be-a41b-c138bff78c17",
+        "body": "{\"job_id\":\"c6b5426d-19cb-48be-a41b-c138bff78c17\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:16:23.156532+00:00\",\"user_id\":\"fix2_burst_935b63\"}"
+      },
+      {
+        "status": 200,
+        "latency": 31.462,
+        "job_id": "c83a8fe8-1884-46a6-8d5b-be2a2a4c30ad",
+        "body": "{\"job_id\":\"c83a8fe8-1884-46a6-8d5b-be2a2a4c30ad\",\"status\":\"queued\",\"created_at\":\"2026-02-19T22:16:27.702507+00:00\",\"user_id\":\"fix2_burst_935b63\"}"
+      }
+    ]
+  },
+  "timestamp": "2026-02-19T22:09:41.282719+00:00",
+  "all_ok": false
+}

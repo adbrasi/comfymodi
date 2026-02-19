@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-02-19T22:01:15.159966+00:00",
+  "api": "https://cezarsaint--comfyui-saas-api.modal.run",
+  "results": [
+    {
+      "scenario": "A_immediate",
+      "job_id": "378fa681-0d44-4c3a-8c04-1beee6242912",
+      "cancel_status": 200,
+      "cancel_body": "{\"message\":\"Job cancellation requested\"}",
+      "terminal_reached": true,
+      "terminal_wait_s": 0.53,
+      "final_status": "cancelled"
+    },
+    {
+      "scenario": "B_running",
+      "job_id": "0de435e5-87fe-4b0a-aafe-93419bbe2fad",
+      "state_before_cancel": "running",
+      "cancel_status": 200,
+      "cancel_body": "{\"message\":\"Job cancellation requested\"}",
+      "terminal_reached": true,
+      "terminal_wait_s": 25.47,
+      "final_status": "completed"
+    },
+    {
+      "scenario": "C_double_cancel",
+      "job_id": "0648a4a1-dbb0-46e2-b826-0442d46b7a58",
+      "cancel1_status": 200,
+      "cancel1_body": "{\"message\":\"Job cancellation requested\"}",
+      "cancel2_status": 200,
+      "cancel2_body": "{\"message\":\"Job cancellation requested\"}",
+      "terminal_reached": true,
+      "terminal_wait_s": 0.59,
+      "final_status": "cancelled"
+    },
+    {
+      "scenario": "D_cross_user_cancel",
+      "job_id": "b2d1ec51-ca12-416a-b547-7785a37a8dac",
+      "wrong_user_cancel_status": 404,
+      "wrong_user_body": "{\"detail\":\"Job not found\"}",
+      "owner_cancel_status": 200,
+      "owner_cancel_body": "{\"message\":\"Job cancellation requested\"}",
+      "terminal_reached": true,
+      "terminal_wait_s": 0.73,
+      "final_status": "cancelled"
+    }
+  ]
+}
