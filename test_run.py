@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Quick test run with detailed progress display and logging."""
+"""Quick test run with detailed progress display and logging.
+
+Usage:
+    export COMFYUI_API_URL=https://yourworkspace--comfyui-saas-api.modal.run
+    export COMFYUI_API_KEY=your-api-key
+    python test_run.py
+"""
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -8,14 +15,20 @@ from pathlib import Path
 
 import requests
 
-API = "https://cezarsaint--comfyui-saas-api.modal.run"
-KEY = "qF_t4jghSUNhm5GeL7Jr_DYfL2zhDVjGOZxigoKJq1g"
+API = os.environ.get("COMFYUI_API_URL", "https://cezarsaint--comfyui-saas-api.modal.run")
+KEY = os.environ.get("COMFYUI_API_KEY", "")
+
+if not KEY:
+    print("ERROR: set COMFYUI_API_KEY env var")
+    sys.exit(1)
+
 HEADERS = {"Authorization": f"Bearer {KEY}"}
 
 workflow = json.loads(Path("workflows/sdxl_simple_exampleV2.json").read_text())
 
 print("=== ComfyUI SDXL Test Run ===")
 print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"API:  {API}")
 print()
 
 r = requests.post(
@@ -89,9 +102,9 @@ while True:
                 print(f"  [text] {out['data'][:100]}")
         break
 
-    if status == "failed":
+    if status in ("failed", "cancelled"):
         print()
-        print("=== JOB FAILED ===")
+        print(f"=== JOB {status.upper()} ===")
         print(f"Error: {s.get('error')}")
         print()
         print("--- Logs ---")

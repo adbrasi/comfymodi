@@ -211,6 +211,7 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class MediaInput(BaseModel):
@@ -231,12 +232,16 @@ class JobCreate(BaseModel):
     inputs: List[WorkflowOverride] = Field(default_factory=list)
     media: List[MediaInput] = Field(default_factory=list)
     webhook_url: Optional[str] = None
+    # Optional caller-supplied identifier for multi-tenant tracking.
+    # Your SaaS backend should pass your internal user/org ID here.
+    user_id: Optional[str] = None
 
 
 class JobCreateResponse(BaseModel):
     job_id: str
     status: JobStatus
     created_at: str
+    user_id: Optional[str] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -245,6 +250,7 @@ class JobStatusResponse(BaseModel):
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    user_id: Optional[str] = None
     # Progress (0-100)
     progress: int = 0
     # Sampler step progress (e.g., diffusion step 15/30)
@@ -391,6 +397,12 @@ class ComfyService:
             if not job_file.exists():
                 raise FileNotFoundError(f"Job {job_id} not found")
             job_data = json.loads(job_file.read_text())
+
+            # Guard: check if job was cancelled/timed-out while GPU was spinning up
+            if job_data.get("status") in ("cancelled", "failed"):
+                print(f"[job:{short_id}] Job already {job_data['status']} before execution — skipping")
+                return
+
             job_data["logs"] = []
 
             # 2. Mark as running
@@ -472,6 +484,7 @@ class ComfyService:
             current_step: int = 0
             total_steps: int = 0
             last_commit = time.time()
+            last_cancel_check = time.time()
 
             def calc_progress() -> int:
                 n = max(len(node_order) or len(workflow), 1)
@@ -496,6 +509,21 @@ class ComfyService:
                     last_commit = now
 
             while True:
+                # Periodic cancellation check (every ~15 s) — reads the job
+                # file from the volume so the cancel_job endpoint can signal us.
+                _t = time.time()
+                if _t - last_cancel_check > 15:
+                    last_cancel_check = _t
+                    try:
+                        jobs_vol.reload()
+                        cur_status = json.loads(job_file.read_text()).get("status")
+                        if cur_status in ("cancelled", "failed"):
+                            log(f"Job {cur_status} mid-execution — stopping")
+                            ws.close()
+                            return
+                    except Exception:
+                        pass
+
                 try:
                     raw = ws.recv()
                 except websocket.WebSocketTimeoutException:
@@ -750,6 +778,17 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
     for m in body.media:
         if m.data and len(m.data) * 3 / 4 > 50 * 1024 * 1024:
             raise HTTPException(400, f"Media '{m.name}' exceeds 50MB limit")
+        if m.url:
+            try:
+                _validate_external_url(m.url, field=f"media '{m.name}' url")
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+
+    if body.webhook_url:
+        try:
+            _validate_external_url(body.webhook_url, field="webhook_url")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -759,6 +798,7 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
         "status": "queued",
         "created_at": now,
         "updated_at": now,
+        "user_id": body.user_id,
         "workflow": body.workflow,
         "inputs": [i.model_dump() for i in body.inputs],
         "media": [m.model_dump() for m in body.media],
@@ -775,10 +815,56 @@ async def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
     # Dispatch to GPU worker
     ComfyService().run_job.spawn(job_id)
 
-    return JobCreateResponse(job_id=job_id, status=JobStatus.QUEUED, created_at=now)
+    return JobCreateResponse(job_id=job_id, status=JobStatus.QUEUED, created_at=now, user_id=body.user_id)
 
 
-QUEUED_TIMEOUT_SECONDS = 300  # 5 min — if still queued, mark failed
+QUEUED_TIMEOUT_SECONDS = 120  # 2 min — if still queued, GPU unavailable → fail
+
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_external_url(url: str, field: str = "URL") -> str:
+    """Validate a user-supplied URL is safe to fetch (SSRF prevention).
+
+    Blocks:
+    - Non-http(s) schemes (file://, ftp://, etc.)
+    - Private RFC-1918 ranges (10.x, 172.16-31.x, 192.168.x)
+    - Loopback (127.x, ::1)
+    - Link-local (169.254.x, fe80::)
+    - Reserved / unspecified addresses
+    """
+    import ipaddress
+    import urllib.parse
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError(f"Malformed {field}: {url!r}")
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"{field} must use http or https (got {parsed.scheme!r})")
+
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"{field} is missing a hostname")
+
+    # Reject bare IP addresses in private/loopback ranges
+    try:
+        ip = ipaddress.ip_address(host)
+        if any([
+            ip.is_private, ip.is_loopback, ip.is_link_local,
+            ip.is_reserved, ip.is_unspecified, ip.is_multicast,
+        ]):
+            raise ValueError(f"{field} resolves to a restricted IP range — not allowed")
+    except ValueError as exc:
+        if "restricted" in str(exc):
+            raise
+        # host is a domain name, not a raw IP — that's fine
+
+    return url
 
 
 def _check_queued_timeout(data: dict) -> dict:
@@ -813,6 +899,7 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
         created_at=data["created_at"],
         started_at=data.get("started_at"),
         completed_at=data.get("completed_at"),
+        user_id=data.get("user_id"),
         progress=data.get("progress", 0),
         current_step=data.get("current_step", 0),
         total_steps=data.get("total_steps", 0),
@@ -829,9 +916,10 @@ async def get_job(job_id: str, _key: str = Depends(verify_api_key)):
 async def list_jobs(
     status: Optional[str] = None,
     limit: int = 50,
+    user_id: Optional[str] = None,
     _key: str = Depends(verify_api_key),
 ):
-    """List recent jobs."""
+    """List recent jobs. Filter by status and/or user_id for multi-tenant isolation."""
     limit = min(limit, 200)
     jobs_path = Path(JOBS_DIR)
     jobs_vol.reload()
@@ -844,11 +932,14 @@ async def list_jobs(
                 d = _check_queued_timeout(json.loads(jf.read_text()))
                 if status and d["status"] != status:
                     continue
+                if user_id and d.get("user_id") != user_id:
+                    continue
                 results.append({
                     "job_id": d["job_id"],
                     "status": d["status"],
                     "created_at": d["created_at"],
                     "progress": d.get("progress", 0),
+                    "user_id": d.get("user_id"),
                 })
             except Exception:
                 continue
@@ -858,7 +949,11 @@ async def list_jobs(
 
 @web_app.delete("/v1/jobs/{job_id}")
 async def cancel_job(job_id: str, _key: str = Depends(verify_api_key)):
-    """Cancel a job (marks as failed, GPU may still finish current step)."""
+    """Cancel a queued or running job.
+
+    Sets status to 'cancelled' in the volume. The GPU worker polls this flag
+    every ~15 seconds and will stop cleanly on the next cycle.
+    """
     job_file = Path(JOBS_DIR) / f"{job_id}.json"
     jobs_vol.reload()
 
@@ -866,16 +961,16 @@ async def cancel_job(job_id: str, _key: str = Depends(verify_api_key)):
         raise HTTPException(404, "Job not found")
 
     data = json.loads(job_file.read_text())
-    if data["status"] in ("completed", "failed"):
-        return {"message": "Job already finished"}
+    if data["status"] in ("completed", "failed", "cancelled"):
+        return {"message": f"Job already {data['status']}"}
 
-    data["status"] = "failed"
+    data["status"] = "cancelled"
     data["error"] = "Cancelled by user"
     data["completed_at"] = datetime.now(timezone.utc).isoformat()
     job_file.write_text(json.dumps(data))
     jobs_vol.commit()
 
-    return {"message": "Job cancelled"}
+    return {"message": "Job cancelled — worker will stop within ~15 seconds"}
 
 
 @web_app.get("/health")
