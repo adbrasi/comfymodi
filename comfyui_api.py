@@ -17,6 +17,8 @@ import os
 import hmac
 import ipaddress
 import urllib.parse
+import threading
+from collections import defaultdict
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -139,12 +141,6 @@ gpu_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "wget", "curl", "libgl1", "libglib2.0-0", "ffmpeg")
     .pip_install(
-        "torch==2.6.0",
-        "torchvision==0.21.0",
-        "torchaudio==2.6.0",
-        extra_index_url="https://download.pytorch.org/whl/cu128",
-    )
-    .pip_install(
         "comfy-cli==1.4.1",
         "huggingface_hub[hf_transfer]==0.34.4",
         "websocket-client",
@@ -156,6 +152,13 @@ gpu_image = (
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "PYTHONUNBUFFERED": "1"})
     .run_commands("comfy --skip-prompt install --skip-manager --fast-deps --nvidia")
+    # Install torch AFTER comfy (comfy overwrites it) to pin the exact version
+    .pip_install(
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        "torchaudio==2.6.0",
+        extra_index_url="https://download.pytorch.org/whl/cu128",
+    )
     .add_local_dir(
         local_path=Path(__file__).parent / "memory_snapshot_helper",
         remote_path=f"{COMFY_DIR}/custom_nodes/memory_snapshot_helper",
@@ -677,6 +680,28 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials  # noqa: E
 web_app = FastAPI(title="ComfyUI SaaS API", version="4.0.0")
 security = HTTPBearer()
 
+# In-memory sliding window quota (works because API_MAX_CONTAINERS=1).
+# Tracks submission timestamps per user within a rolling window.
+# Window size matches QUEUED_TIMEOUT_SECONDS so users who fill the quota must
+# wait until their oldest job would have timed out before submitting more.
+_quota_lock = threading.Lock()
+_user_submit_times: dict[str, list] = defaultdict(list)  # {user_id: [epoch_float, ...]}
+
+QUOTA_WINDOW_SECONDS = QUEUED_TIMEOUT_SECONDS  # reuse same constant (360s)
+
+
+def _check_quota(user_id: str) -> bool:
+    """Return True if user is within quota. Also registers the submission."""
+    now = time.time()
+    cutoff = now - QUOTA_WINDOW_SECONDS
+    with _quota_lock:
+        times = _user_submit_times[user_id]
+        times[:] = [t for t in times if t > cutoff]   # evict expired
+        if len(times) >= MAX_ACTIVE_JOBS_PER_USER:
+            return False
+        times.append(now)
+        return True
+
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     expected = os.environ.get("API_KEY", "")
@@ -707,21 +732,10 @@ def create_job(body: JobCreate, _key: str = Depends(verify_api_key)):
         except ValueError as e:
             raise HTTPException(400, str(e))
 
-    # Simple per-user job count (no locks needed)
-    if body.user_id:
-        jobs_vol.reload()
-        jobs_path = Path(JOBS_DIR)
-        active_count = 0
-        if jobs_path.exists():
-            for jf in jobs_path.glob("*.json"):
-                try:
-                    d = json.loads(jf.read_text())
-                    if d.get("user_id") == body.user_id and d.get("status") in ("queued", "running"):
-                        active_count += 1
-                except Exception:
-                    continue
-        if active_count >= MAX_ACTIVE_JOBS_PER_USER:
-            raise HTTPException(429, "Too many active jobs. Wait for current jobs to finish.")
+    # Per-user quota via in-memory sliding window (immune to fast job completion).
+    # Works correctly because API_MAX_CONTAINERS=1 — single process.
+    if body.user_id and not _check_quota(body.user_id):
+        raise HTTPException(429, "Too many active jobs. Wait for current jobs to finish.")
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
