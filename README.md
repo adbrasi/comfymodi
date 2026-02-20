@@ -1,6 +1,6 @@
 # ComfyUI SaaS API — Modal.com
 
-REST API serverless para execução de workflows ComfyUI em GPU, com cold start otimizado via memory snapshots, armazenamento de outputs no Cloudflare R2, e suporte multi-tenant.
+REST API serverless para execução de workflows ComfyUI em GPU, com cold start otimizado via memory snapshots e armazenamento de outputs no Cloudflare R2.
 
 ---
 
@@ -11,7 +11,6 @@ comfyui_api.py          — único arquivo de deploy (toda a lógica)
 memory_snapshot_helper/ — custom node que permite snapshot seguro (sem CUDA)
 workflows/              — workflows de exemplo/referência (não são carregados automaticamente)
 test_run.py             — script de teste com progress bar
-test_api.py             — teste completo com download de outputs
 .env.example            — template de variáveis de ambiente
 CLAUDE.md               — instruções para o agente de desenvolvimento
 ```
@@ -23,7 +22,7 @@ CLAUDE.md               — instruções para o agente de desenvolvimento
 ```
 Cliente (seu SaaS backend)
         │
-        │  POST /v1/jobs  { workflow, inputs, user_id } + header X-User-ID
+        │  POST /v1/jobs  { workflow, inputs, user_id }
         ▼
   API Function (CPU, leve, sempre ativa)
         │  salva job no Volume + spawna worker
@@ -91,7 +90,6 @@ A URL da API aparecerá no output: `https://<workspace>--comfyui-saas-api.modal.
 ### Verificar setup
 
 ```bash
-# Checa modelos e custom nodes no volume
 modal run comfyui_api.py::verify_setup
 ```
 
@@ -121,19 +119,14 @@ APP_NAME = "comfyui-video"
 
 MODELS = [
     ("Wan-AI/Wan2.1-T2V-14B-Diffusers", "wan2_1_t2v_14b.safetensors", "checkpoints"),
-    # VAE, CLIP, etc.
 ]
 
 CUSTOM_NODES = [
-    "https://github.com/kijai/ComfyUI-WanVideoWrapper",
+    ("https://github.com/kijai/ComfyUI-WanVideoWrapper", "abc123"),  # (url, commit_hash)
 ]
 ```
 
-Cada `APP_NAME` diferente cria um **app separado no Modal** com sua própria URL, volumes e billing. Você pode ter múltiplos deployados ao mesmo tempo:
-
-```bash
-modal deploy comfyui_api.py   # cria/atualiza o app com o APP_NAME atual
-```
+Cada `APP_NAME` diferente cria um **app separado no Modal** com sua própria URL, volumes e billing.
 
 > Para múltiplos apps, duplique o arquivo (ex: `comfyui_image_api.py`, `comfyui_video_api.py`) e altere `APP_NAME` em cada um.
 
@@ -149,10 +142,7 @@ Os modelos são **baixados uma única vez durante o build da imagem** e ficam pe
 
 ```python
 MODELS = [
-    # Existente
-    ("ChenkinNoob/ChenkinNoob-XL-V0.2", "ChenkinNoob-XL-V0.2.safetensors", "checkpoints"),
-    # Novo
-    ("stabilityai/stable-diffusion-xl-refiner-1.0", "sd_xl_refiner_1.0.safetensors", "checkpoints"),
+    ("OnomaAIResearch/Illustrious-XL-v1.0", "Illustrious-XL-v1.0.safetensors", "checkpoints"),
     ("madebyollin/sdxl-vae-fp16-fix", "sdxl_vae.safetensors", "vae"),
 ]
 ```
@@ -172,22 +162,22 @@ Formato: `(repo_id_huggingface, nome_do_arquivo, subdiretório_relativo_a_models
     controlnet/    — ControlNets
     clip/          — encoders de texto
     unet/          — UNets separados
-  outputs/         — outputs temporários (limpo automaticamente)
+  outputs/         — outputs temporários
 ```
 
 ### Volumes compartilhados entre apps
 
-O volume `comfyui-models-cache` é compartilhado por padrão. Se você quiser volumes separados por app (para isolar modelos grandes), mude `CACHE_VOL_NAME`:
+O volume `comfyui-models-cache` é compartilhado por padrão. Para volumes separados por app:
 
 ```python
-CACHE_VOL_NAME = "comfyui-models-video"  # volume dedicado para o app de vídeo
+CACHE_VOL_NAME = "comfyui-models-video"  # volume dedicado
 ```
 
 ---
 
 ## Workflows: como funcionam
 
-**Os workflows NÃO ficam salvos no Modal.** Cada chamada de API envia o workflow completo no corpo da requisição. Isso oferece máxima flexibilidade.
+**Os workflows NÃO ficam salvos no Modal.** Cada chamada de API envia o workflow completo no corpo da requisição.
 
 ### Quem define o workflow?
 
@@ -198,7 +188,6 @@ Seu **backend SaaS** monta o workflow e os inputs antes de chamar a API. O clien
 ```json
 POST /v1/jobs
 Authorization: Bearer <sua-api-key>
-X-User-ID: user_abc123
 
 {
   "workflow": { ...workflow_json_completo... },
@@ -216,12 +205,10 @@ O campo `inputs` sobrescreve valores específicos no workflow antes de executar.
 
 ### Onde guardar os workflows?
 
-Opções comuns:
-
 | Estratégia | Quando usar |
 |------------|-------------|
 | **Arquivo local** (pasta `workflows/`) | Desenvolvimento e testes |
-| **Banco de dados** (Postgres, Mongo) | Produção multi-tenant com templates por tier |
+| **Banco de dados** (Postgres, Mongo) | Produção com templates por tier |
 | **Hardcoded no backend** | App com workflow fixo (ex: "gerador de avatar") |
 
 ### Exemplo: carregar workflow de arquivo e submeter
@@ -256,18 +243,7 @@ print(job["job_id"])  # poll com GET /v1/jobs/{job_id}
 Todas as rotas (exceto `/health`) exigem:
 ```
 Authorization: Bearer <API_KEY>
-X-User-ID: <tenant-or-user-id>
 ```
-
-Regras de formato para `X-User-ID`:
-- Até 128 caracteres
-- Apenas: `A-Z a-z 0-9 . _ : @ -`
-
-Camada extra opcional (recomendado em produção): habilite proxy auth nativo do Modal:
-```bash
-API_REQUIRE_PROXY_AUTH=1
-```
-Com isso, além do `Bearer`, o endpoint também exige `Modal-Key` + `Modal-Secret` (token de proxy auth do workspace).
 
 ### Endpoints
 
@@ -279,11 +255,11 @@ Com isso, além do `Bearer`, o endpoint também exige `Modal-Key` + `Modal-Secre
   "inputs":      [ ... ],           // overrides de campos (opcional)
   "media":       [ ... ],           // arquivos de entrada (imagens, vídeos)
   "webhook_url": "https://...",     // callback ao completar (opcional)
-  "user_id":     "string"           // ID do usuário (obrigatório; deve bater com X-User-ID)
+  "user_id":     "string"           // ID do usuário para rastreamento (opcional)
 }
 ```
 
-Retorna: `{ "job_id": "uuid", "status": "queued", "created_at": "...", "user_id": "..." }`
+Retorna: `{ "job_id": "uuid", "status": "queued", "created_at": "..." }`
 
 #### `GET /v1/jobs/{job_id}` — Status do job
 
@@ -307,29 +283,11 @@ Retorna: `{ "job_id": "uuid", "status": "queued", "created_at": "...", "user_id"
 
 Query params: `?status=completed&user_id=user_123&limit=50`
 
-Retorna apenas jobs do `X-User-ID` chamador. Se `user_id` for enviado, deve ser igual ao header.
-
 #### `DELETE /v1/jobs/{job_id}` — Cancelar job
 
 Solicita cancelamento com `FunctionCall.cancel()` no Modal e marca o job como `cancelled`.
-O worker também faz parada cooperativa ao detectar o status no volume.
 
 #### `GET /health` — Health check (sem auth)
-
----
-
-## Multi-tenant: isolamento por usuário
-
-A API usa **uma única chave compartilhada** entre seu backend e o Modal. Seu SaaS backend é responsável por autenticar seus usuários antes de chamar a API.
-
-Para isolamento por tenant:
-
-1. Sempre envie `X-User-ID` no header
-2. Envie `user_id` no payload com o mesmo valor do header
-3. `GET /v1/jobs/{id}` e `DELETE /v1/jobs/{id}` validam ownership
-4. `GET /v1/jobs` retorna apenas jobs do caller
-
-Para isolamento completo de dados em produção, considere instâncias dedicadas por cliente enterprise (deploy com `APP_NAME` diferente e chave separada).
 
 ---
 
@@ -338,45 +296,28 @@ Para isolamento completo de dados em produção, considere instâncias dedicadas
 | Cenário | Tempo estimado |
 |---------|----------------|
 | Container warm (snapshot restaurado) | ~3-8 s até iniciar execução |
-| Cold start com snapshot existente | ~30-90 s (depende de alocação GPU e fila) |
+| Cold start com snapshot existente | ~30-90 s (depende de alocação GPU) |
 | Primeira execução (criando snapshot) | ~3-5 min |
 | GPU indisponível (espera por alocação) | 0-6 min |
 
-Jobs que ficam em `queued` por mais de **240s** (configurável via `QUEUED_TIMEOUT_SECONDS`) são marcados como `failed` por uma tarefa agendada (`fail_stale_queued_jobs`). Faça retry no seu backend.
+Jobs em `queued` por mais de **360s** (configurável via `QUEUED_TIMEOUT_SECONDS`) são marcados como `failed` automaticamente. Faça retry no seu backend.
 
-### Manter container quente (opcional)
+### Controle de custo
 
-Para evitar cold start, adicione `min_containers=1` ao `@app.cls`:
-
-```python
-@app.cls(
-    ...
-    min_containers=1,   # sempre mantém 1 GPU ativa (~$1.95/h no idle com L40S)
-)
-```
-
-### Controle de custo e burst
-
-- `MAX_ACTIVE_JOBS_GLOBAL` limita jobs `queued|running` no sistema.
-- `MAX_ACTIVE_JOBS_PER_USER` limita jobs ativos por `X-User-ID`.
-- `GPU_BUFFER_CONTAINERS` mantém GPUs extras prontas durante pico para reduzir fila sem manter `min_containers` alto.
-- `GPU_MIN_CONTAINERS=0` reduz custo idle (mais cold start).
-- `GPU_MIN_CONTAINERS=1` reduz latência de cold start (maior custo fixo).
-- `API_REQUIRE_PROXY_AUTH=1` adiciona autenticação de borda do Modal para reduzir abuso de endpoint.
+- `GPU_MAX_CONTAINERS=2` — máximo de GPUs simultâneas
+- `GPU_MIN_CONTAINERS=0` — zero custo idle (mais cold start)
+- `GPU_MIN_CONTAINERS=1` — container sempre quente (~$1.95/h com L40S)
+- `GPU_BUFFER_CONTAINERS` — GPUs extras prontas em pico
+- `MAX_ACTIVE_JOBS_PER_USER=5` — limite de jobs ativos por usuário
 
 ---
 
 ## Monitoring e logs
 
 ```bash
-# Ver apps deployados
-modal app list
-
-# Logs em tempo real
-modal app logs comfyui-saas
-
-# Ver containers ativos
-modal container list
+modal app list           # ver apps deployados
+modal app logs comfyui-saas   # logs em tempo real
+modal container list     # ver containers ativos
 ```
 
 Os logs de execução também são retornados no campo `logs` de cada job.
@@ -386,16 +327,10 @@ Os logs de execução também são retornados no campo `logs` de cada job.
 ## Troubleshooting
 
 **Job fica em `queued` e falha por timeout**
-→ A tarefa agendada `fail_stale_queued_jobs` marcou o job como expirado (`QUEUED_TIMEOUT_SECONDS`). Em picos, aumente esse valor.
+→ A GPU não ficou disponível a tempo. Aumente `QUEUED_TIMEOUT_SECONDS` ou configure `GPU_MIN_CONTAINERS=1`.
 
 **`ModuleNotFoundError` ao fazer deploy**
-→ Adicione o pacote ao `.pip_install()` do `gpu_image` no arquivo.
-
-**Imagem gerada com artefatos / corrompida**
-→ Verifique o workflow com o ComfyUI local primeiro.
+→ Adicione o pacote ao `.pip_install()` do `gpu_image`.
 
 **R2 URL expirada**
-→ URLs têm validade configurável (`R2_URL_TTL_SECONDS`, default 24h). `GET /v1/jobs/{job_id}` reemite URL assinada para outputs com `r2_key`.
-
-**SSRF error ao usar `media.url`**
-→ URLs de IPs privados (10.x, 192.168.x, 127.x) são bloqueadas por segurança. Use URLs públicas.
+→ URLs têm validade de 24h (configurável). `GET /v1/jobs/{job_id}` reemite URL assinada automaticamente.

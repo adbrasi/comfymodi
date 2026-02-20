@@ -24,7 +24,6 @@ if not KEY:
 
 HEADERS = {
     "Authorization": f"Bearer {KEY}",
-    "X-User-ID": "test_user_123",
 }
 
 workflow = json.loads(Path("workflows/sdxl_simple_exampleV2.json").read_text())
