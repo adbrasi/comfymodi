@@ -1,0 +1,47 @@
+[
+  {
+    "tag": "concurrency3_run1",
+    "job_id": "9d471b95-8e3f-4b03-a7ba-f9bb63720165",
+    "status": "completed",
+    "queue_wait_s": 1.07,
+    "run_time_s": 6.8,
+    "total_time_s": 7.87,
+    "outputs": [
+      "tests_outputs/concurrency3_run1_9d471b95_0.png"
+    ],
+    "r2_keys": [
+      "outputs/9d471b95-8e3f-4b03-a7ba-f9bb63720165/ComfyUI_00069_.png"
+    ],
+    "error": null
+  },
+  {
+    "tag": "concurrency3_run2",
+    "job_id": "96266a28-c2b9-4a7c-a744-9c1e55e27822",
+    "status": "completed",
+    "queue_wait_s": 9.01,
+    "run_time_s": 17.49,
+    "total_time_s": 26.51,
+    "outputs": [
+      "tests_outputs/concurrency3_run2_96266a28_0.png"
+    ],
+    "r2_keys": [
+      "outputs/96266a28-c2b9-4a7c-a744-9c1e55e27822/ComfyUI_00069_.png"
+    ],
+    "error": null
+  },
+  {
+    "tag": "concurrency3_run3",
+    "job_id": "79934ba4-3b3a-47d8-892e-b991cc80bf2a",
+    "status": "completed",
+    "queue_wait_s": 9.4,
+    "run_time_s": 14.97,
+    "total_time_s": 24.37,
+    "outputs": [
+      "tests_outputs/concurrency3_run3_79934ba4_0.png"
+    ],
+    "r2_keys": [
+      "outputs/79934ba4-3b3a-47d8-892e-b991cc80bf2a/ComfyUI_00070_.png"
+    ],
+    "error": null
+  }
+]
